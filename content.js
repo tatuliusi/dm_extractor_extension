@@ -857,7 +857,7 @@ async function navigateToConversation(item) {
     cy >= 0 && cy <= window.innerHeight && cx >= 0 && cx <= window.innerWidth;
   if (inViewport) {
     const stack = (document.elementsFromPoint(cx, cy) || []).filter(
-      e => e !== document.body && e !== document.documentElement
+      e => e !== document.body && e !== document.documentElement && !isDangerousActionEl(e)
     );
     for (const el of stack) {
       pointerClick(el);
@@ -869,11 +869,29 @@ async function navigateToConversation(item) {
   // 5. Row + ancestors
   let el = item.row;
   for (let i = 0; i < 4 && el && el !== document.body; i++, el = el.parentElement) {
+    if (isDangerousActionEl(el)) continue;
     pointerClick(el);
     const id = await waitForAnyIdChange(prevId, 800);
     if (id) { item.realId = id; return true; }
   }
 
+  return false;
+}
+
+/**
+ * Return true if `el` is a conversation-row action button (Done, Delete, Spam, Star…)
+ * that must never be triggered by the crawler's click strategies.
+ */
+function isDangerousActionEl(el) {
+  const label = (el.getAttribute('aria-label') || '').toLowerCase();
+  const title = (el.getAttribute('title') || '').toLowerCase();
+  const combined = label + ' ' + title;
+  if (/done|მზადაა|delete|spam|სპამი|star|flag|archive|mark as/i.test(combined)) return true;
+  // Button/role="button" with short action-like text
+  if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button') {
+    const text = (el.textContent || '').trim();
+    if (text.length < 40 && /done|მზადაა|delete|spam|სპამი|star|flag/i.test(text)) return true;
+  }
   return false;
 }
 
