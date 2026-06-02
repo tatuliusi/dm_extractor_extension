@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<!--
+  panel.html — DM Extractor floating panel template.
+  This file is loaded as a fetch() by content.js, parsed, and injected
+  into a Shadow DOM root. It is NOT opened as a standalone page.
+-->
+<html lang="en">
+<head><meta charset="utf-8"></head>
+<body>
+
+<div id="dm-panel">
+
+  <!-- Header / drag handle -->
+  <div id="dm-header">
+    <span id="dm-title">DM <span>Extractor</span></span>
+    <button id="dm-collapse-btn" title="Collapse / Expand">▾</button>
+  </div>
+
+  <!-- Collapsible body -->
+  <div id="dm-body">
+
+    <!-- Date range -->
+    <div class="dm-field-group">
+      <div class="dm-field-row">
+        <span class="dm-label">From</span>
+        <input class="dm-date-input" type="date" id="dm-from" />
+      </div>
+      <div class="dm-field-row">
+        <span class="dm-label">To</span>
+        <input class="dm-date-input" type="date" id="dm-to" />
+      </div>
+    </div>
+
+    <!-- Control buttons -->
+    <div class="dm-btn-row">
+      <button class="dm-btn" id="dm-start-btn">▶ Start</button>
+      <button class="dm-btn" id="dm-pause-btn" disabled>⏸ Pause</button>
+      <button class="dm-btn" id="dm-stop-btn"  disabled>■ Stop</button>
+    </div>
+
+    <!-- Progress bar -->
+    <div id="dm-progress-bar-wrap">
+      <div id="dm-progress-bar"></div>
+    </div>
+
+    <!-- Status summary -->
+    <div id="dm-status">
+      <div class="dm-status-line" id="dm-status-inbox">Inbox: —</div>
+      <div class="dm-status-line" id="dm-status-conv">Conversation: —</div>
+      <div class="dm-status-line" id="dm-status-counts">
+        <span class="dm-count-ok"  id="dm-count-dl">Downloaded: 0</span>
+        &nbsp;·&nbsp;
+        <span class="dm-count-skip" id="dm-count-skip">Skipped: 0</span>
+        &nbsp;·&nbsp;
+        <span class="dm-count-err"  id="dm-count-err">Errors: 0</span>
+      </div>
+    </div>
+
+    <!-- Scrollable log -->
+    <div id="dm-log"><span class="log-info">Ready. Set date range and press Start.</span></div>
+
+  </div><!-- /#dm-body -->
+</div><!-- /#dm-panel -->
+
+</body>
+</html>
