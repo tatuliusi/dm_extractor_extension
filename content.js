@@ -281,16 +281,12 @@ function findThreadRegion() {
 /** Extract the contact's display name from the open conversation header. */
 function findCustomerName() {
   const selectors = [
-    // Primary: conversation header h2/h3/h4
-    'h2[dir="auto"]',
-    'h3[dir="auto"]',
-    'h4[dir="auto"]',
-    // Fallback: aria-label on the conversation title element
+    'h1[dir="auto"]', 'h2[dir="auto"]', 'h3[dir="auto"]', 'h4[dir="auto"]',
     '[data-testid="conversation_name"]',
     '[aria-label*="conversation" i] strong',
-    // Last resort: any strong in the top nav area
-    'header strong',
-    'nav strong',
+    '[role="main"] [role="heading"]',
+    '[role="complementary"] [role="heading"]',
+    'header [dir="auto"]', 'header strong', 'nav strong',
   ];
   for (const sel of selectors) {
     const el = document.querySelector(sel);
@@ -561,6 +557,8 @@ async function runCrawl(fromDate, toDate) {
 
     try {
       await waitForElement('[aria-label*="Message list container" i]', THREAD_LOAD_TIMEOUT);
+      // Wait for at least one message bubble to render (prevents extracting a blank thread)
+      await waitForElement('[data-message-id],[data-mid]', 5000).catch(() => null);
     } catch {
       log('err', `Timed out loading thread: ${item.name || item.id}`);
       _stats.errors++;
@@ -568,7 +566,7 @@ async function runCrawl(fromDate, toDate) {
       continue;
     }
 
-    await sleep(700);
+    await sleep(800);
 
     let data;
     try { data = extract(); }
@@ -754,7 +752,16 @@ function extractRowName(el) {
     const found = el.querySelector(sel);
     if (found && found.textContent.trim()) return found.textContent.trim();
   }
-  return el.getAttribute('aria-label') || el.getAttribute('title') || null;
+  const label = el.getAttribute('aria-label');
+  if (label) return label.split(',')[0].trim() || label.trim();
+  const title = el.getAttribute('title');
+  if (title) return title.trim();
+  // WEC rows: contact name/phone comes first in textContent before any Georgian message text.
+  // Extract the leading Latin/digit/symbol run (phone numbers and non-Georgian names).
+  const text = el.textContent.replace(/\s+/g, ' ').trim();
+  const latinPrefix = text.match(/^([A-Za-z0-9 +\-_.@]{1,60})(?=[ა-ჿ]|$)/);
+  if (latinPrefix && latinPrefix[1].trim()) return latinPrefix[1].trim();
+  return null;
 }
 
 /**
