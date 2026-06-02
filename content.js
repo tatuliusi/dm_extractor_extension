@@ -773,38 +773,156 @@ function extractRowName(el) {
 /**
  * Navigate to a conversation by clicking its row.
  *
- * For anchor-based items: we know the target ID, so we wait for that specific ID.
- * For structure-based items: we wait for ANY change in selected_item_id and
- *   store the result in item.realId for deduplication.
+ * Tries multiple strategies in order, stopping as soon as selected_item_id changes:
+ *   1. Native anchor .click() inside the row (isTrusted, follows href)
+ *   2. Data-attribute conversation ID → history.pushState (bypasses click)
+ *   3. React fiber traversal — calls onMouseDown/onClick handler directly
+ *   4. Full pointer+mouse sequence on every element at the row's center point
+ *   5. Same sequence on the row and its ancestors
  */
 async function navigateToConversation(item) {
   try { item.row.scrollIntoView({ block: 'nearest', behavior: 'instant' }); } catch {}
-  await sleep(150);
+  await sleep(200);
 
-  // ── Anchor-based (known target ID) ───────────────────────────────────────
+  const prevId = getSelectedItemId();
+
+  // ── Anchor-based (Messenger / Instagram) ─────────────────────────────────
   if (item.href) {
     let targetId;
     try { targetId = new URL(item.href).searchParams.get('selected_item_id'); } catch {}
     if (targetId) {
       if (getSelectedItemId() === targetId) return true;
+      if (item.anchor) {
+        item.anchor.click();
+        if (await waitForSpecificId(targetId, 2000)) return true;
+      }
       let el = item.row;
-      for (let i = 0; i < 6 && el && el !== document.body; i++, el = el.parentElement) {
-        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      for (let i = 0; i < 4 && el && el !== document.body; i++, el = el.parentElement) {
+        pointerClick(el);
         if (await waitForSpecificId(targetId, 1500)) return true;
       }
-      if (item.anchor) item.anchor.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-      return waitForSpecificId(targetId, 2000);
+      return false;
     }
   }
 
-  // ── Structure-based (unknown target ID — wait for any URL change) ─────────
-  const prevId = getSelectedItemId();
-  let el = item.row;
-  for (let i = 0; i < 5 && el && el !== document.body; i++, el = el.parentElement) {
-    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-    const newId = await waitForAnyIdChange(prevId, 1500);
-    if (newId) { item.realId = newId; return true; }
+  // ── Structure-based (WhatsApp / WEC) ─────────────────────────────────────
+
+  // 1. Native click on inner <a> (trusted, follows href)
+  const innerAnchor = item.row.querySelector('a');
+  if (innerAnchor) {
+    innerAnchor.click();
+    const id = await waitForAnyIdChange(prevId, 2500);
+    if (id) { item.realId = id; return true; }
   }
+
+  // 2. Find conversation ID in data attributes → pushState navigation
+  const dataId = getConvIdFromRow(item.row);
+  if (dataId && dataId !== prevId) {
+    const url = new URL(window.location.href);
+    url.searchParams.set('selected_item_id', dataId);
+    history.pushState({}, '', url.toString());
+    window.dispatchEvent(new PopStateEvent('popstate', { state: {} }));
+    const id = await waitForAnyIdChange(prevId, 3000);
+    if (id) { item.realId = id; return true; }
+  }
+
+  // 3. React fiber traversal — call onMouseDown/onClick handler directly
+  if (reactClick(item.row)) {
+    const id = await waitForAnyIdChange(prevId, 2500);
+    if (id) { item.realId = id; return true; }
+  }
+
+  // 4. Full pointer+mouse sequence on every element at row center (topmost first)
+  const rect = item.row.getBoundingClientRect();
+  if (rect.width > 0 && rect.height > 0) {
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top  + rect.height / 2;
+    const stack = (document.elementsFromPoint(cx, cy) || []).filter(
+      e => e !== document.body && e !== document.documentElement
+    );
+    for (const el of stack) {
+      pointerClick(el);
+      const id = await waitForAnyIdChange(prevId, 800);
+      if (id) { item.realId = id; return true; }
+    }
+  }
+
+  // 5. Row + ancestors
+  let el = item.row;
+  for (let i = 0; i < 4 && el && el !== document.body; i++, el = el.parentElement) {
+    pointerClick(el);
+    const id = await waitForAnyIdChange(prevId, 800);
+    if (id) { item.realId = id; return true; }
+  }
+
+  return false;
+}
+
+/**
+ * Dispatch the full pointer + mouse event sequence a real browser click produces.
+ * Covers handlers listening for PointerEvent, MouseEvent, or both.
+ */
+function pointerClick(el) {
+  const p = { bubbles: true, cancelable: true, view: window, isPrimary: true, button: 0, buttons: 1, pointerId: 1 };
+  const m = { bubbles: true, cancelable: true, view: window, button: 0, buttons: 1 };
+  try {
+    el.dispatchEvent(new PointerEvent('pointerover',  p));
+    el.dispatchEvent(new MouseEvent('mouseover',      m));
+    el.dispatchEvent(new PointerEvent('pointermove',  p));
+    el.dispatchEvent(new MouseEvent('mousemove',      m));
+    el.dispatchEvent(new PointerEvent('pointerdown',  p));
+    el.dispatchEvent(new MouseEvent('mousedown',      m));
+    el.dispatchEvent(new PointerEvent('pointerup',    p));
+    el.dispatchEvent(new MouseEvent('mouseup',        m));
+    el.dispatchEvent(new MouseEvent('click',          m));
+  } catch { }
+}
+
+/**
+ * Scan data attributes on `row` and its descendants for a numeric conversation ID.
+ * Returns the ID string or null.
+ */
+function getConvIdFromRow(row) {
+  const nodes = [row, ...row.querySelectorAll('[data-thread-id],[data-conversation-id],[data-item-id],[data-id]')];
+  for (const el of nodes) {
+    for (const attr of el.attributes) {
+      if (/thread|conv|item|chat/i.test(attr.name) && /^\d{5,}$/.test(attr.value)) {
+        return attr.value;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Walk the React fiber tree upward from `el` and invoke the first found
+ * onMouseDown / onClick / onPointerDown prop.
+ * Returns true if a handler was found and called.
+ */
+function reactClick(el) {
+  try {
+    const key = Object.keys(el).find(k =>
+      k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')
+    );
+    if (!key) return false;
+    let fiber = el[key];
+    while (fiber) {
+      const props = fiber.memoizedProps;
+      if (props) {
+        for (const name of ['onMouseDown', 'onClick', 'onPointerDown']) {
+          if (typeof props[name] === 'function') {
+            const evt = new MouseEvent(
+              name === 'onMouseDown' ? 'mousedown' : 'click',
+              { bubbles: true, cancelable: true, view: window, button: 0, buttons: 1 }
+            );
+            props[name](evt);
+            return true;
+          }
+        }
+      }
+      fiber = fiber.return;
+    }
+  } catch { }
   return false;
 }
 
