@@ -14,9 +14,17 @@
 
 'use strict';
 
+// ─── Module-level state (must be declared before the guard block runs) ──────
+let _bridge       = null;
+let _state        = 'idle'; // 'idle' | 'running' | 'paused' | 'stopped'
+let _pauseResolve = null;
+let _stopSignal   = false;
+let _shadowHost   = null;
+const _seenIds    = new Set();
+let _stats        = { downloaded: 0, skipped: 0, errors: 0, convIndex: 0, convTotal: 0 };
+
 // ─── Guard: don't initialise twice on SPA navigations ─────────────────────
 if (window.__dmExtractorLoaded) {
-  // Re-inject panel if it got removed (MBS SPA can blow away the DOM)
   ensurePanelMounted();
 } else {
   window.__dmExtractorLoaded = true;
@@ -32,20 +40,6 @@ function init() {
   injectPanel();
   watchForSPANavigations();
 }
-
-// ─── Bridge object (shared between content.js, panel.js, DevTools) ─────────
-let _bridge = null;
-
-// Crawler state machine variables
-let _state      = 'idle'; // 'idle' | 'running' | 'paused' | 'stopped'
-let _pauseResolve = null; // resolve fn for pause promise
-let _stopSignal = false;
-
-// Session deduplication
-const _seenIds = new Set();
-
-// Progress counters
-let _stats = { downloaded: 0, skipped: 0, errors: 0, convIndex: 0, convTotal: 0 };
 
 function setupBridge() {
   _bridge = {
@@ -78,8 +72,6 @@ function setupBridge() {
 // ═══════════════════════════════════════════════════════════════════════════
 // PANEL INJECTION
 // ═══════════════════════════════════════════════════════════════════════════
-
-let _shadowHost = null;
 
 async function injectPanel() {
   // Prevent double-injection
