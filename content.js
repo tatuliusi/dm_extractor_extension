@@ -502,28 +502,23 @@ function waitIfPaused() {
 // ─── Main crawl loop ─────────────────────────────────────────────────────
 
 async function runCrawl(fromDate, toDate) {
-  // Find the conversation list container (left sidebar)
   const listContainer = findConversationListContainer();
   if (!listContainer) {
     log('err', 'Could not find conversation list. Make sure an inbox is open.');
     return;
   }
+  log('info', 'Conversation list container found.');
 
   let processed = 0;
   let emptyScrollCount = 0;
   let previousItemCount = 0;
 
   while (!_stopSignal) {
-    // Collect all currently-visible conversation rows
-    const rows = getConversationRows(listContainer);
-    const newRows = rows.filter(row => {
-      const id = getRowId(row);
-      return id && !_seenIds.has(id);
-    });
+    const items = getConversationItems(listContainer);
+    const newItems = items.filter(item => !_seenIds.has(item.id));
 
-    if (newRows.length === 0) {
-      // No new rows — try scrolling to load more
-      const currentCount = rows.length;
+    if (newItems.length === 0) {
+      const currentCount = items.length;
       if (currentCount === previousItemCount) {
         emptyScrollCount++;
         if (emptyScrollCount >= MAX_EMPTY_SCROLLS) {
@@ -540,66 +535,59 @@ async function runCrawl(fromDate, toDate) {
     }
 
     emptyScrollCount = 0;
-    previousItemCount = rows.length;
-    _stats.convTotal = _seenIds.size + newRows.length; // approximate
+    previousItemCount = items.length;
+    _stats.convTotal = _seenIds.size + newItems.length;
     emitProgress({ inbox: detectInboxType() });
 
-    for (const row of newRows) {
+    for (const item of newItems) {
       if (_stopSignal) break;
       await waitIfPaused();
       if (_stopSignal) break;
 
-      const rowId = getRowId(row);
-      _seenIds.add(rowId);
+      _seenIds.add(item.id);
       processed++;
       _stats.convIndex = processed;
 
-      const rowName = getRowName(row) || `#${processed}`;
-      log('info', `Opening: ${rowName}`);
-      emitProgress({ inbox: detectInboxType(), convName: rowName });
+      log('info', `Opening: ${item.name || item.id}`);
+      emitProgress({ inbox: detectInboxType(), convName: item.name || item.id });
 
-      // Click the row to open the conversation
-      const prevConvId = getSelectedItemId();
-      try {
-        row.click();
-      } catch {
-        log('err', `Failed to click row: ${rowName}`);
+      // Navigate — tries clicking the row and its ancestors until the URL changes
+      const navigated = await navigateToConversation(item);
+      if (!navigated) {
+        log('err', `Could not navigate to conversation ${item.id} — skipping`);
         _stats.errors++;
+        emitProgress({ inbox: detectInboxType() });
         continue;
       }
 
-      // Wait for the URL to reflect the new conversation before checking the DOM.
-      // Without this, waitForElement resolves immediately against the previous thread.
-      await waitForUrlChange(prevConvId, 3000);
-
-      // Wait for new thread's message container to appear
+      // Wait for the thread message container to load
       try {
         await waitForElement('[aria-label*="Message list container" i]', THREAD_LOAD_TIMEOUT);
       } catch {
-        log('err', `Timed out loading thread: ${rowName}`);
+        log('err', `Timed out loading thread: ${item.name || item.id}`);
         _stats.errors++;
-        emitProgress({ inbox: detectInboxType(), convName: rowName });
+        emitProgress({ inbox: detectInboxType() });
         continue;
       }
 
-      // Extra delay to let React finish rendering messages into the container
-      await sleep(600);
+      // Let React finish rendering messages
+      await sleep(700);
 
       // Extract
       let data;
       try {
         data = extract();
       } catch (err) {
-        log('err', `extract() threw for ${rowName}: ${err.message}`);
+        log('err', `extract() threw: ${err.message}`);
         _stats.errors++;
-        emitProgress({ inbox: detectInboxType(), convName: rowName });
+        emitProgress({ inbox: detectInboxType() });
         continue;
       }
 
       if (!data || data.error) {
-        log('err', `Extraction failed for ${rowName}: ${data ? data.error : 'null'}`);
+        log('err', `Extraction failed: ${data ? data.error : 'null'}`);
         _stats.errors++;
-        emitProgress({ inbox: detectInboxType(), convName: rowName });
+        emitProgress({ inbox: detectInboxType() });
         continue;
       }
 
@@ -607,53 +595,38 @@ async function runCrawl(fromDate, toDate) {
       const { filtered, filteredMessages } = filterByDateRange(data.messages, fromDate, toDate);
 
       if (filteredMessages.length === 0) {
-        log('skip', `No messages in range: ${rowName}`);
+        log('skip', `No messages in range: ${item.name || item.id}`);
         _stats.skipped++;
-        emitProgress({ inbox: detectInboxType(), convName: rowName });
+        emitProgress({ inbox: detectInboxType() });
         await sleep(DELAY_BETWEEN_CONVS);
         continue;
       }
 
-      // Build output object
-      const output = {
-        ...data,
-        messages : filteredMessages,
-        count    : filteredMessages.length,
-      };
+      const output = { ...data, messages: filteredMessages, count: filteredMessages.length };
       if (filtered) {
         output.filtered    = true;
         output.filter_from = fromDate.toISOString().slice(0, 10);
         output.filter_to   = toDate.toISOString().slice(0, 10);
       }
 
-      // Download (with one retry)
       let downloaded = false;
       for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          download(output);
-          downloaded = true;
-          break;
-        } catch (err) {
-          if (attempt === 0) {
-            log('err', `Download failed for ${rowName}, retrying…`);
-            await sleep(500);
-          }
-        }
+        try { download(output); downloaded = true; break; }
+        catch (err) { if (attempt === 0) { log('err', `Download failed, retrying…`); await sleep(500); } }
       }
 
       if (downloaded) {
-        log('ok', `Downloaded (${filteredMessages.length} msgs): ${rowName}`);
+        log('ok', `Downloaded (${filteredMessages.length} msgs): ${item.name || item.id}`);
         _stats.downloaded++;
       } else {
-        log('err', `Download failed after retry: ${rowName}`);
+        log('err', `Download failed after retry: ${item.name || item.id}`);
         _stats.errors++;
       }
 
-      emitProgress({ inbox: detectInboxType(), convName: rowName });
+      emitProgress({ inbox: detectInboxType() });
       await sleep(DELAY_BETWEEN_CONVS);
     }
 
-    // After processing visible rows, scroll to load more
     scrollListDown(listContainer);
     await sleep(SCROLL_WAIT);
   }
@@ -662,41 +635,39 @@ async function runCrawl(fromDate, toDate) {
 // ─── Conversation list helpers ────────────────────────────────────────────
 
 /**
- * Find the scrollable container that holds the conversation list.
- * Primary: walk up from the first conversation anchor to its scrollable ancestor.
- * Fallback: aria-label patterns, then any left-column scrollable div.
+ * Find the scrollable sidebar container.
+ * Strictly filters to the LEFT half of the viewport so we never pick up the
+ * thread pane, which also contains a[href*="selected_item_id"] links.
  */
 function findConversationListContainer() {
-  // Best signal: conversation anchors with selected_item_id in their href
-  const firstLink = document.querySelector('a[href*="selected_item_id"]');
-  if (firstLink) {
-    let el = firstLink.parentElement;
+  const half = window.innerWidth / 2;
+
+  // Best signal: find a sidebar anchor, walk up to its scrollable ancestor
+  const allLinks = Array.from(document.querySelectorAll('a[href*="selected_item_id"]'));
+  const sidebarLink = allLinks.find(a => {
+    const r = a.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && r.left < half;
+  });
+
+  if (sidebarLink) {
+    let el = sidebarLink.parentElement;
     while (el && el !== document.body) {
-      const style = window.getComputedStyle(el);
-      const ov = style.overflow + ' ' + style.overflowY;
-      if (/auto|scroll/.test(ov) && el.scrollHeight > el.clientHeight + 10) {
+      const { overflow, overflowY } = window.getComputedStyle(el);
+      if (/auto|scroll/.test(overflow + overflowY) && el.scrollHeight > el.clientHeight + 20) {
+        console.log('[DM Extractor] Sidebar container (from anchor):', el.tagName, el.scrollHeight, '>', el.clientHeight);
         return el;
       }
       el = el.parentElement;
     }
   }
 
-  // Fallback: explicit aria-label on a list role
-  const byLabel = document.querySelector(
-    '[aria-label*="conversation" i][role="list"],' +
-    '[aria-label*="inbox" i][role="list"],' +
-    '[aria-label*="chat" i][role="list"]'
-  );
-  if (byLabel) return byLabel;
-
-  // Fallback: first large scrollable div on the left side of the viewport
-  const scrollables = document.querySelectorAll('div');
-  for (const el of scrollables) {
-    const style = window.getComputedStyle(el);
-    const ov = style.overflow + ' ' + style.overflowY;
-    if (!/auto|scroll/.test(ov)) continue;
-    const rect = el.getBoundingClientRect();
-    if (rect.left < 400 && rect.height > 300 && el.scrollHeight > el.clientHeight + 10) {
+  // Fallback: leftmost large scrollable div
+  for (const el of document.querySelectorAll('div')) {
+    const r = el.getBoundingClientRect();
+    if (r.left > half || r.height < 300 || r.width < 100) continue;
+    const { overflow, overflowY } = window.getComputedStyle(el);
+    if (/auto|scroll/.test(overflow + overflowY) && el.scrollHeight > el.clientHeight + 50) {
+      console.log('[DM Extractor] Sidebar container (fallback):', el.tagName, el.scrollHeight);
       return el;
     }
   }
@@ -705,71 +676,91 @@ function findConversationListContainer() {
 }
 
 /**
- * Get all conversation row elements from the list container.
- * Primary: anchor tags with selected_item_id — the definitive MBS conversation link.
- * Fallback: role-based selectors.
+ * Collect all visible conversation items from the sidebar container.
+ * Returns Array<{ id, href, name, anchor, row }>
+ *
+ * `row` is the direct child of `container` that wraps the conversation —
+ * this is what we click, not the <a> itself, because React's onClick handler
+ * is typically on the row div, not the inner anchor.
  */
-function getConversationRows(container) {
-  // Anchors with selected_item_id are the most reliable signal
+function getConversationItems(container) {
+  const half = window.innerWidth / 2;
+  const seen = new Set();
+  const items = [];
+
   const links = container.querySelectorAll('a[href*="selected_item_id"]');
-  if (links.length) return Array.from(links);
+  for (const anchor of links) {
+    // Skip anything that renders on the right side (thread pane, etc.)
+    const rect = anchor.getBoundingClientRect();
+    if (rect.left >= half || rect.width === 0) continue;
 
-  // Role-based fallback
-  const byRole = container.querySelectorAll('[role="row"], [role="listitem"], [role="option"]');
-  if (byRole.length) return Array.from(byRole);
+    let id;
+    try { id = new URL(anchor.href).searchParams.get('selected_item_id'); } catch { continue; }
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
 
-  return [];
+    // Walk up to the direct child of container — that's the clickable row div
+    let row = anchor;
+    while (row.parentElement && row.parentElement !== container) {
+      row = row.parentElement;
+    }
+
+    // Extract name from within the row
+    let name = null;
+    for (const sel of ['[role="heading"]', 'strong', 'b', 'span[dir="auto"]']) {
+      const el = row.querySelector(sel);
+      if (el && el.textContent.trim()) { name = el.textContent.trim(); break; }
+    }
+    if (!name) name = anchor.getAttribute('aria-label') || anchor.getAttribute('title') || null;
+
+    items.push({ id, href: anchor.href, name, anchor, row });
+  }
+
+  return items;
 }
 
 /**
- * Extract a stable identifier from a conversation row.
- * Works whether `row` is the <a> itself or a wrapper containing one.
+ * Navigate to a conversation by clicking its row and verifying the URL changes.
+ * Tries the row element, then walks up ancestors, because MBS's React onClick
+ * handler may be on a parent div rather than the <a> itself.
  */
-function getRowId(row) {
-  // row might be the <a> directly
-  const href = row.tagName === 'A' ? row.href : (row.querySelector('a[href*="selected_item_id"]') || {}).href;
-  if (href) {
-    try {
-      const id = new URL(href).searchParams.get('selected_item_id');
-      if (id) return id;
-    } catch { /* ignore malformed URLs */ }
+async function navigateToConversation(item) {
+  if (getSelectedItemId() === item.id) return true;
+
+  // Scroll into view so the element is in the rendered viewport
+  try { item.anchor.scrollIntoView({ block: 'nearest', behavior: 'instant' }); } catch {}
+  await sleep(150);
+
+  // Try clicking from the row up through 6 ancestor levels
+  let el = item.row;
+  for (let i = 0; i < 6 && el && el !== document.body; i++, el = el.parentElement) {
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    if (await waitForSpecificId(item.id, 1500)) return true;
   }
-  const dataId = row.getAttribute('data-id') || row.getAttribute('data-thread-id');
-  if (dataId) return dataId;
 
-  const name = getRowName(row);
-  return name ? 'name:' + name : null;
-}
-
-/** Extract display name from a conversation row or anchor element. */
-function getRowName(row) {
-  for (const sel of ['[role="heading"]', 'strong', 'b', 'span[dir="auto"]']) {
-    const el = row.querySelector(sel);
-    if (el && el.textContent.trim()) return el.textContent.trim();
-  }
-  return row.getAttribute('aria-label') || row.getAttribute('title') || null;
-}
-
-/** Scroll the list container down by its visible height to trigger lazy loading. */
-function scrollListDown(container) {
-  container.scrollTop += container.clientHeight || 400;
+  // Final attempt: click the anchor itself
+  item.anchor.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+  return waitForSpecificId(item.id, 2000);
 }
 
 /**
- * Wait until the page URL's selected_item_id differs from `prevId`, or timeout.
- * Always resolves (never rejects) — caller proceeds regardless.
+ * Wait until selected_item_id in the URL equals targetId, or timeout.
+ * Resolves true if matched, false on timeout.
  */
-function waitForUrlChange(prevId, timeout = 3000) {
+function waitForSpecificId(targetId, timeout) {
   return new Promise(resolve => {
-    if (getSelectedItemId() !== prevId) { resolve(); return; }
+    if (getSelectedItemId() === targetId) { resolve(true); return; }
     const deadline = Date.now() + timeout;
-    const interval = setInterval(() => {
-      if (getSelectedItemId() !== prevId || Date.now() >= deadline) {
-        clearInterval(interval);
-        resolve();
-      }
+    const iv = setInterval(() => {
+      if (getSelectedItemId() === targetId) { clearInterval(iv); resolve(true); }
+      else if (Date.now() >= deadline)      { clearInterval(iv); resolve(false); }
     }, 100);
   });
+}
+
+/** Scroll the sidebar container down to trigger virtual-scroll loading. */
+function scrollListDown(container) {
+  container.scrollTop += container.clientHeight || 400;
 }
 
 // ─── Date range filtering ─────────────────────────────────────────────────
