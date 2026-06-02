@@ -554,10 +554,22 @@ async function runCrawl(fromDate, toDate) {
       // Navigate — tries clicking the row and its ancestors until the URL changes
       const navigated = await navigateToConversation(item);
       if (!navigated) {
-        log('err', `Could not navigate to conversation ${item.id} — skipping`);
+        log('err', `Could not navigate to conversation ${item.name || item.id} — skipping`);
         _stats.errors++;
         emitProgress({ inbox: detectInboxType() });
         continue;
+      }
+
+      // item.realId is set by navigateToConversation when we used structure-based rows.
+      // If we've already downloaded this conversation via a different DOM row, skip.
+      if (item.realId) {
+        if (_seenIds.has(item.realId)) {
+          log('info', `Skipping duplicate: ${item.name || item.realId}`);
+          _stats.skipped++;
+          emitProgress({ inbox: detectInboxType() });
+          continue;
+        }
+        _seenIds.add(item.realId);
       }
 
       // Wait for the thread message container to load
@@ -676,77 +688,141 @@ function findConversationListContainer() {
 }
 
 /**
- * Collect all visible conversation items from the sidebar container.
- * Returns Array<{ id, href, name, anchor, row }>
+ * Collect visible conversation items from the sidebar container.
+ * Returns Array<{ id, href, name, anchor, row, realId? }>
  *
- * `row` is the direct child of `container` that wraps the conversation —
- * this is what we click, not the <a> itself, because React's onClick handler
- * is typically on the row div, not the inner anchor.
+ * Strategy A — anchor-based: works for Messenger / Instagram which render
+ *   <a href="...?selected_item_id=X"> in the sidebar.
+ * Strategy B — structure-based: works for WEC / WhatsApp which render React
+ *   divs with no anchor href; rows are identified as direct children of the
+ *   container that have a typical row height and are on the left side.
+ *   `realId` is populated later by navigateToConversation() after the URL changes.
  */
 function getConversationItems(container) {
   const half = window.innerWidth / 2;
-  const seen = new Set();
-  const items = [];
 
-  const links = container.querySelectorAll('a[href*="selected_item_id"]');
-  for (const anchor of links) {
-    // Skip anything that renders on the right side (thread pane, etc.)
-    const rect = anchor.getBoundingClientRect();
-    if (rect.left >= half || rect.width === 0) continue;
+  // ── Strategy A ───────────────────────────────────────────────────────────
+  const links = Array.from(container.querySelectorAll('a[href*="selected_item_id"]')).filter(a => {
+    const r = a.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && r.left < half;
+  });
 
-    let id;
-    try { id = new URL(anchor.href).searchParams.get('selected_item_id'); } catch { continue; }
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-
-    // Walk up to the direct child of container — that's the clickable row div
-    let row = anchor;
-    while (row.parentElement && row.parentElement !== container) {
-      row = row.parentElement;
+  if (links.length > 0) {
+    const seen = new Set();
+    const items = [];
+    for (const anchor of links) {
+      let id;
+      try { id = new URL(anchor.href).searchParams.get('selected_item_id'); } catch { continue; }
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      let row = anchor;
+      while (row.parentElement && row.parentElement !== container) row = row.parentElement;
+      const name = extractRowName(row) || anchor.getAttribute('aria-label') || null;
+      items.push({ id, href: anchor.href, name, anchor, row });
     }
-
-    // Extract name from within the row
-    let name = null;
-    for (const sel of ['[role="heading"]', 'strong', 'b', 'span[dir="auto"]']) {
-      const el = row.querySelector(sel);
-      if (el && el.textContent.trim()) { name = el.textContent.trim(); break; }
+    if (items.length > 0) {
+      console.log('[DM Extractor] Strategy A:', items.length, 'items');
+      return items;
     }
-    if (!name) name = anchor.getAttribute('aria-label') || anchor.getAttribute('title') || null;
-
-    items.push({ id, href: anchor.href, name, anchor, row });
   }
 
-  return items;
+  // ── Strategy B ───────────────────────────────────────────────────────────
+  // Descend through single-child wrappers (virtualization layers) up to 4 levels deep.
+  let level = container;
+  for (let depth = 0; depth < 4; depth++) {
+    const children = Array.from(level.children);
+
+    // Look for children that match a typical conversation row shape
+    const rows = children.filter(el => {
+      const r = el.getBoundingClientRect();
+      return r.height >= 50 && r.height <= 220 && r.width > 80 && r.left < half && r.left >= 0;
+    });
+
+    if (rows.length >= 2) {
+      console.log(`[DM Extractor] Strategy B: ${rows.length} rows at depth ${depth}`);
+      return rows.map(row => {
+        const name = extractRowName(row);
+        // Fingerprint = first 80 chars of text, used as a temporary ID until real
+        // selected_item_id is known (after clicking opens the conversation).
+        const fp = 'fp:' + row.textContent.replace(/\s+/g, ' ').trim().slice(0, 80);
+        return { id: fp, href: null, name, anchor: null, row };
+      });
+    }
+
+    // Exactly one child → might be a virtualization wrapper, go deeper
+    if (children.length === 1) {
+      level = children[0];
+    } else {
+      break;
+    }
+  }
+
+  console.log('[DM Extractor] No rows found in container');
+  return [];
+}
+
+/** Pull the contact name out of a conversation row element. */
+function extractRowName(el) {
+  for (const sel of ['[role="heading"]', 'strong', 'b', 'span[dir="auto"]']) {
+    const found = el.querySelector(sel);
+    if (found && found.textContent.trim()) return found.textContent.trim();
+  }
+  return el.getAttribute('aria-label') || el.getAttribute('title') || null;
 }
 
 /**
- * Navigate to a conversation by clicking its row and verifying the URL changes.
- * Tries the row element, then walks up ancestors, because MBS's React onClick
- * handler may be on a parent div rather than the <a> itself.
+ * Navigate to a conversation by clicking its row.
+ *
+ * For anchor-based items: we know the target ID, so we wait for that specific ID.
+ * For structure-based items: we wait for ANY change in selected_item_id and
+ *   store the result in item.realId for deduplication.
  */
 async function navigateToConversation(item) {
-  if (getSelectedItemId() === item.id) return true;
-
-  // Scroll into view so the element is in the rendered viewport
-  try { item.anchor.scrollIntoView({ block: 'nearest', behavior: 'instant' }); } catch {}
+  try { item.row.scrollIntoView({ block: 'nearest', behavior: 'instant' }); } catch {}
   await sleep(150);
 
-  // Try clicking from the row up through 6 ancestor levels
-  let el = item.row;
-  for (let i = 0; i < 6 && el && el !== document.body; i++, el = el.parentElement) {
-    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-    if (await waitForSpecificId(item.id, 1500)) return true;
+  // ── Anchor-based (known target ID) ───────────────────────────────────────
+  if (item.href) {
+    let targetId;
+    try { targetId = new URL(item.href).searchParams.get('selected_item_id'); } catch {}
+    if (targetId) {
+      if (getSelectedItemId() === targetId) return true;
+      let el = item.row;
+      for (let i = 0; i < 6 && el && el !== document.body; i++, el = el.parentElement) {
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        if (await waitForSpecificId(targetId, 1500)) return true;
+      }
+      if (item.anchor) item.anchor.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      return waitForSpecificId(targetId, 2000);
+    }
   }
 
-  // Final attempt: click the anchor itself
-  item.anchor.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-  return waitForSpecificId(item.id, 2000);
+  // ── Structure-based (unknown target ID — wait for any URL change) ─────────
+  const prevId = getSelectedItemId();
+  let el = item.row;
+  for (let i = 0; i < 5 && el && el !== document.body; i++, el = el.parentElement) {
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    const newId = await waitForAnyIdChange(prevId, 1500);
+    if (newId) { item.realId = newId; return true; }
+  }
+  return false;
 }
 
-/**
- * Wait until selected_item_id in the URL equals targetId, or timeout.
- * Resolves true if matched, false on timeout.
- */
+/** Resolves with the new selected_item_id when URL changes, or null on timeout. */
+function waitForAnyIdChange(prevId, timeout) {
+  return new Promise(resolve => {
+    const cur = getSelectedItemId();
+    if (cur && cur !== prevId) { resolve(cur); return; }
+    const deadline = Date.now() + timeout;
+    const iv = setInterval(() => {
+      const id = getSelectedItemId();
+      if (id && id !== prevId) { clearInterval(iv); resolve(id); }
+      else if (Date.now() >= deadline) { clearInterval(iv); resolve(null); }
+    }, 100);
+  });
+}
+
+/** Resolves true when selected_item_id in URL matches targetId, false on timeout. */
 function waitForSpecificId(targetId, timeout) {
   return new Promise(resolve => {
     if (getSelectedItemId() === targetId) { resolve(true); return; }
