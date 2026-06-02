@@ -781,8 +781,15 @@ function extractRowName(el) {
  *   5. Same sequence on the row and its ancestors
  */
 async function navigateToConversation(item) {
-  try { item.row.scrollIntoView({ block: 'nearest', behavior: 'instant' }); } catch {}
-  await sleep(200);
+  // Bail early if the virtual scroll has recycled this DOM node
+  if (!document.body.contains(item.row)) return false;
+
+  // Scroll to center so elementsFromPoint has a valid coordinate
+  try { item.row.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch {}
+  await sleep(400);
+
+  // If the row disappeared after the scroll, give up
+  if (!document.body.contains(item.row)) return false;
 
   const prevId = getSelectedItemId();
 
@@ -834,9 +841,11 @@ async function navigateToConversation(item) {
 
   // 4. Full pointer+mouse sequence on every element at row center (topmost first)
   const rect = item.row.getBoundingClientRect();
-  if (rect.width > 0 && rect.height > 0) {
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top  + rect.height / 2;
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top  + rect.height / 2;
+  const inViewport = rect.width > 0 && rect.height > 0 &&
+    cy >= 0 && cy <= window.innerHeight && cx >= 0 && cx <= window.innerWidth;
+  if (inViewport) {
     const stack = (document.elementsFromPoint(cx, cy) || []).filter(
       e => e !== document.body && e !== document.documentElement
     );
