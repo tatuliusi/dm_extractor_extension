@@ -105,30 +105,8 @@ async function injectPanel() {
     const body = tmp.querySelector('body');
     (body || tmp).childNodes.forEach(n => shadow.appendChild(n.cloneNode(true)));
 
-    // Inject panel.js into shadow document context
-    // We use a script appended to the MAIN document but reading from the
-    // shadow host's document — simpler: eval the script with shadow scope trick.
-    // Actually panel.js uses document.getElementById which won't work inside shadow.
-    // We monkey-patch document.getElementById on a proxy document, OR we simply
-    // pass the shadow root and have panel.js use shadowRoot.getElementById.
-    // Cleanest MV3 approach: eval panel.js text with a patched getElementById.
-    const jsUrl  = chrome.runtime.getURL('panel.js');
-    const jsText = await fetch(jsUrl).then(r => r.text());
-
-    // Create a minimal document proxy so panel.js getElementById resolves inside shadow.
-    // ShadowRoot has no getElementById — use querySelector instead.
-    const shadowDoc = {
-      getElementById: (id) => shadow.querySelector('#' + id),
-      createElement : (tag) => document.createElement(tag),
-      addEventListener: document.addEventListener.bind(document),
-    };
-
-    // Wrap panel.js: replace global `document` references with shadowDoc
-    // We achieve this by running panel.js inside a function that receives
-    // a local `document` binding.
-    const wrappedJs = `(function(document, window) { ${jsText} })(shadowDoc, window)`;
-    // eslint-disable-next-line no-new-func
-    new Function('shadowDoc', wrappedJs)(shadowDoc);
+    // Wire up panel UI directly — no eval needed, avoids page CSP restrictions
+    initPanelUI(shadow);
 
   } catch (err) {
     console.error('[DM Extractor] Panel injection failed:', err);
@@ -149,6 +127,146 @@ function watchForSPANavigations() {
     }
   });
   observer.observe(document.body, { childList: true, subtree: false });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PANEL UI  (runs inside the shadow DOM — no eval, no CSP issues)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function initPanelUI(shadow) {
+  const $ = id => shadow.querySelector('#' + id);
+
+  const panel       = $('dm-panel');
+  const collapseBtn = $('dm-collapse-btn');
+  const fromInput   = $('dm-from');
+  const toInput     = $('dm-to');
+  const startBtn    = $('dm-start-btn');
+  const pauseBtn    = $('dm-pause-btn');
+  const stopBtn     = $('dm-stop-btn');
+  const progressBar = $('dm-progress-bar');
+  const statusInbox = $('dm-status-inbox');
+  const statusConv  = $('dm-status-conv');
+  const countDl     = $('dm-count-dl');
+  const countSkip   = $('dm-count-skip');
+  const countErr    = $('dm-count-err');
+  const logEl       = $('dm-log');
+
+  // Default date range: current calendar month
+  const now   = new Date();
+  const first = new Date(now.getFullYear(), now.getMonth(), 1);
+  fromInput.value = first.toISOString().slice(0, 10);
+  toInput.value   = now.toISOString().slice(0, 10);
+
+  // ── Collapse / expand ────────────────────────────────────────────────────
+  collapseBtn.addEventListener('click', () => {
+    panel.classList.toggle('collapsed');
+    collapseBtn.textContent = panel.classList.contains('collapsed') ? '▸' : '▾';
+  });
+
+  // ── Drag to reposition ───────────────────────────────────────────────────
+  let dragging = false, dragOffX = 0, dragOffY = 0;
+  $('dm-header').addEventListener('mousedown', e => {
+    dragging = true;
+    const rect = panel.getBoundingClientRect();
+    dragOffX = e.clientX - rect.left;
+    dragOffY = e.clientY - rect.top;
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    panel.style.right  = 'unset';
+    panel.style.bottom = 'unset';
+    panel.style.left   = (e.clientX - dragOffX) + 'px';
+    panel.style.top    = (e.clientY - dragOffY) + 'px';
+  });
+  document.addEventListener('mouseup', () => { dragging = false; });
+
+  // ── Buttons ──────────────────────────────────────────────────────────────
+  startBtn.addEventListener('click', () => {
+    const from = fromInput.value;
+    const to   = toInput.value;
+    if (!from || !to) { appendLog('Please set both From and To dates.', 'err'); return; }
+    if (from > to)    { appendLog('"From" must be before "To".', 'err'); return; }
+    setButtons('running');
+    _bridge.start({ from, to });
+  });
+
+  pauseBtn.addEventListener('click', () => {
+    if (_bridge.state() === 'paused') {
+      setButtons('running');
+      _bridge.resume();
+    } else {
+      setButtons('paused');
+      _bridge.pause();
+    }
+  });
+
+  stopBtn.addEventListener('click', () => {
+    _bridge.stop();
+    setButtons('idle');
+  });
+
+  // ── Bridge callbacks ─────────────────────────────────────────────────────
+  _bridge.onProgress = info => {
+    statusInbox.innerHTML = 'Inbox: <span class="dm-inbox-label">' +
+      escHtml(info.inbox || '—') + '</span>';
+    if (info.convTotal > 0) {
+      statusConv.textContent =
+        `Conversation: ${info.convIndex} / ${info.convTotal}` +
+        (info.convName ? ` — ${truncate(info.convName, 24)}` : '');
+      progressBar.style.width = Math.round((info.convIndex / info.convTotal) * 100) + '%';
+    } else {
+      statusConv.textContent = 'Scanning conversations…';
+    }
+    countDl.textContent   = 'Downloaded: ' + (info.downloaded || 0);
+    countSkip.textContent = 'Skipped: '    + (info.skipped    || 0);
+    countErr.textContent  = 'Errors: '     + (info.errors     || 0);
+  };
+
+  _bridge.onLog  = (message, type) => appendLog(message, type || 'info');
+
+  _bridge.onDone = summary => {
+    setButtons('idle');
+    progressBar.style.width = '100%';
+    appendLog(
+      `Done. Downloaded: ${summary.downloaded}  Skipped: ${summary.skipped}  Errors: ${summary.errors}`,
+      'ok'
+    );
+  };
+
+  _bridge.appendLog = appendLog;
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  function setButtons(state) {
+    if (state === 'idle') {
+      startBtn.disabled = false; pauseBtn.disabled = true; stopBtn.disabled = true;
+      pauseBtn.textContent = '⏸ Pause';
+      fromInput.disabled = false; toInput.disabled = false;
+    } else if (state === 'running') {
+      startBtn.disabled = true; pauseBtn.disabled = false; stopBtn.disabled = false;
+      pauseBtn.textContent = '⏸ Pause';
+      fromInput.disabled = true; toInput.disabled = true;
+    } else if (state === 'paused') {
+      pauseBtn.textContent = '▶ Resume';
+    }
+  }
+
+  function appendLog(message, type) {
+    const line = document.createElement('div');
+    line.className = 'log-' + (type || 'info');
+    line.textContent = '[' + new Date().toLocaleTimeString() + '] ' + message;
+    logEl.appendChild(line);
+    while (logEl.children.length > 60) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function escHtml(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function truncate(str, n) {
+    return str.length > n ? str.slice(0, n) + '…' : str;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
