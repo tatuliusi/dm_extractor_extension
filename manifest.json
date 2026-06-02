@@ -17,10 +17,7 @@
   "web_accessible_resources": [
     {
       "resources": ["panel.html", "panel.css", "panel.js"],
-      "matches": [
-        "https://business.facebook.com/*",
-        "https://*.facebook.com/latest/inbox/*"
-      ]
+      "matches": ["https://*.facebook.com/*"]
     }
   ],
   "icons": {
