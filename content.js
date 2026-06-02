@@ -292,6 +292,19 @@ function findCustomerName() {
     const el = document.querySelector(sel);
     if (el && el.textContent.trim()) return el.textContent.trim();
   }
+
+  // WEC/WhatsApp: contact name renders as a leaf <div tabindex="-1"> in the
+  // conversation header (confirmed via DevTools: <div tabindex="-1">Ani Khmaladze</div>)
+  for (const div of document.querySelectorAll('div[tabindex="-1"]')) {
+    if (div.children.length > 0) continue;          // must be a text-only leaf
+    const t = div.textContent.trim();
+    if (!t || t.length > 100) continue;
+    const r = div.getBoundingClientRect();
+    if (r.width < 10 || r.height < 10) continue;    // must be visible
+    if (r.left > window.innerWidth * 0.75) continue; // not in the right-side info panel
+    return t;
+  }
+
   return null;
 }
 
@@ -600,12 +613,13 @@ async function runCrawl(fromDate, toDate) {
       continue;
     }
 
-    const output = { ...data, messages: filteredMessages, count: filteredMessages.length };
-    if (filtered) {
-      output.filtered    = true;
-      output.filter_from = fromDate.toISOString().slice(0, 10);
-      output.filter_to   = toDate.toISOString().slice(0, 10);
-    }
+    const output = {
+      ...data,
+      messages   : filteredMessages,
+      count      : filteredMessages.length,
+      filter_from: fromDate.toISOString().slice(0, 10),
+      filter_to  : toDate.toISOString().slice(0, 10),
+    };
 
     let downloaded = false;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -962,8 +976,11 @@ function scrollListDown(container) {
 // ─── Date range filtering ─────────────────────────────────────────────────
 
 /**
- * Filter messages array to only those within [fromDate, toDate].
- * Messages with no parseable date are included conservatively.
+ * Determine whether to include a conversation based on its last message date.
+ * If the last parseable message date falls within [fromDate, toDate], return
+ * ALL messages (full conversation context).  Otherwise return empty (skip it).
+ *
+ * "What matters is that the last message is inside the range."
  *
  * @param {Array} messages
  * @param {Date} fromDate
@@ -971,27 +988,22 @@ function scrollListDown(container) {
  * @returns {{ filtered: boolean, filteredMessages: Array }}
  */
 function filterByDateRange(messages, fromDate, toDate) {
-  let currentDate = null;
-  let anyFiltered = false;
+  if (!messages.length) return { filtered: false, filteredMessages: [] };
 
-  // First pass: assign resolved Date objects to each message
-  const annotated = messages.map(msg => {
-    if (msg.date && msg.date !== currentDate) {
-      currentDate = msg.date;
-    }
-    const parsed = parseDateLabel(currentDate);
-    return { ...msg, _parsedDate: parsed };
-  });
+  // Find the last message that carries a parseable date label
+  let lastDate = null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const d = parseDateLabel(messages[i].date);
+    if (d) { lastDate = d; break; }
+  }
 
-  const inRange = annotated.filter(msg => dateInRange(msg._parsedDate, fromDate, toDate));
+  // If no date is parseable, include conservatively (can't tell → don't skip)
+  if (!lastDate || dateInRange(lastDate, fromDate, toDate)) {
+    return { filtered: false, filteredMessages: messages };
+  }
 
-  // Check if we actually dropped anything
-  if (inRange.length !== messages.length) anyFiltered = true;
-
-  // Remove internal annotation before returning
-  const filteredMessages = inRange.map(({ _parsedDate, ...rest }) => rest);
-
-  return { filtered: anyFiltered, filteredMessages };
+  // Last message is outside the range → skip this conversation entirely
+  return { filtered: true, filteredMessages: [] };
 }
 
 // ─── Bridge event emitters ────────────────────────────────────────────────
