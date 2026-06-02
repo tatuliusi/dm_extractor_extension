@@ -294,14 +294,17 @@ function findCustomerName() {
   }
 
   // WEC/WhatsApp: contact name renders as a leaf <div tabindex="-1"> in the
-  // conversation header (confirmed via DevTools: <div tabindex="-1">Ani Khmaladze</div>)
+  // conversation header (confirmed via DevTools: <div tabindex="-1">Ani Khmaladze</div>).
+  // Guards: must be in the top quarter of the viewport (header area, not message bubbles),
+  // must be single-line, and must be short (names ≤ 60 chars; message text is longer).
   for (const div of document.querySelectorAll('div[tabindex="-1"]')) {
-    if (div.children.length > 0) continue;          // must be a text-only leaf
+    if (div.children.length > 0) continue;
     const t = div.textContent.trim();
-    if (!t || t.length > 100) continue;
+    if (!t || t.length > 60 || t.includes('\n')) continue;
     const r = div.getBoundingClientRect();
-    if (r.width < 10 || r.height < 10) continue;    // must be visible
-    if (r.left > window.innerWidth * 0.75) continue; // not in the right-side info panel
+    if (r.width < 10 || r.height < 10) continue;
+    if (r.left > window.innerWidth * 0.75) continue;  // not in the right info panel
+    if (r.top  > window.innerHeight * 0.25) continue; // header is in the top quarter
     return t;
   }
 
