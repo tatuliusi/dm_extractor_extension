@@ -74,6 +74,15 @@ const MONTH_NAMES = {
   july:6,august:7,september:8,october:9,november:10,december:11,
   jan:0,feb:1,mar:2,apr:3,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11
 };
+// Georgian month names used by WhatsApp/WEC date separators (e.g. "13 მაისი. 2026, 18:17")
+const GEORGIAN_MONTHS = {
+  'იანვარი':0,'თებერვალი':1,'მარტი':2,'აპრილი':3,
+  'მაისი':4,'ივნისი':5,'ივლისი':6,'აგვისტო':7,
+  'სექტემბერი':8,'ოქტომბერი':9,'ნოემბერი':10,'დეკემბერი':11,
+  'იანვ':0,'თებ':1,'მარ':2,'აპრ':3,
+  'მაი':4,'ივნ':5,'ივლ':6,'აგვ':7,
+  'სექ':8,'ოქტ':9,'ნოე':10,'დეკ':11,
+};
 
 /**
  * Parse a human-readable date label from MBS thread dividers into a Date object.
@@ -131,6 +140,16 @@ function parseDateLabel(label) {
       // If month/day is in the future (no year given), assume last year
       if (!monthDayYear[3] && d > today) d.setFullYear(year - 1);
       return d;
+    }
+  }
+
+  // "13 მაისი. 2026" or "13 მაისი. 2026, 18:17" — WEC/WhatsApp Georgian datetime format
+  const geoMatch = raw.match(/^(\d{1,2})\s+([^\d\s.][^\d.]*?)\.?\s*,?\s*(\d{4})/);
+  if (geoMatch) {
+    const monthName = geoMatch[2].trim();
+    const monthIdx = GEORGIAN_MONTHS[monthName] ?? MONTH_NAMES[monthName.toLowerCase()];
+    if (monthIdx !== undefined) {
+      return new Date(parseInt(geoMatch[3], 10), monthIdx, parseInt(geoMatch[1], 10), 0, 0, 0, 0);
     }
   }
 

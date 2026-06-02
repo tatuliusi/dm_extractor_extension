@@ -510,137 +510,121 @@ async function runCrawl(fromDate, toDate) {
   log('info', 'Conversation list container found.');
 
   let processed = 0;
-  let emptyScrollCount = 0;
-  let previousItemCount = 0;
+  let emptyScrolls = 0;
 
   while (!_stopSignal) {
-    const items = getConversationItems(listContainer);
-    const newItems = items.filter(item => !_seenIds.has(item.id));
+    await waitIfPaused();
+    if (_stopSignal) break;
 
-    if (newItems.length === 0) {
-      const currentCount = items.length;
-      if (currentCount === previousItemCount) {
-        emptyScrollCount++;
-        if (emptyScrollCount >= MAX_EMPTY_SCROLLS) {
-          log('info', 'Reached end of conversation list.');
-          break;
-        }
-      } else {
-        emptyScrollCount = 0;
-        previousItemCount = currentCount;
+    // Re-discover visible items every iteration to get a fresh DOM reference.
+    // Virtual scroll recycles DOM nodes; cached references go stale and cause
+    // navigation to fail or land on the wrong conversation.
+    const items = getConversationItems(listContainer);
+    const item  = items.find(i => !_seenIds.has(i.id));
+
+    if (!item) {
+      if (++emptyScrolls >= MAX_EMPTY_SCROLLS) {
+        log('info', 'Reached end of conversation list.');
+        break;
       }
       scrollListDown(listContainer);
       await sleep(SCROLL_WAIT);
       continue;
     }
 
-    emptyScrollCount = 0;
-    previousItemCount = items.length;
-    _stats.convTotal = _seenIds.size + newItems.length;
-    emitProgress({ inbox: detectInboxType() });
+    emptyScrolls = 0;
+    _seenIds.add(item.id);
+    processed++;
+    _stats.convIndex = processed;
+    _stats.convTotal = _seenIds.size + items.filter(i => !_seenIds.has(i.id)).length;
 
-    for (const item of newItems) {
-      if (_stopSignal) break;
-      await waitIfPaused();
-      if (_stopSignal) break;
+    log('info', `Opening: ${item.name || item.id}`);
+    emitProgress({ inbox: detectInboxType(), convName: item.name || item.id });
 
-      _seenIds.add(item.id);
-      processed++;
-      _stats.convIndex = processed;
-
-      log('info', `Opening: ${item.name || item.id}`);
-      emitProgress({ inbox: detectInboxType(), convName: item.name || item.id });
-
-      // Navigate — tries clicking the row and its ancestors until the URL changes
-      const navigated = await navigateToConversation(item);
-      if (!navigated) {
-        log('err', `Could not navigate to conversation ${item.name || item.id} — skipping`);
-        _stats.errors++;
-        emitProgress({ inbox: detectInboxType() });
-        continue;
-      }
-
-      // item.realId is set by navigateToConversation when we used structure-based rows.
-      // If we've already downloaded this conversation via a different DOM row, skip.
-      if (item.realId) {
-        if (_seenIds.has(item.realId)) {
-          log('info', `Skipping duplicate: ${item.name || item.realId}`);
-          _stats.skipped++;
-          emitProgress({ inbox: detectInboxType() });
-          continue;
-        }
-        _seenIds.add(item.realId);
-      }
-
-      // Wait for the thread message container to load
-      try {
-        await waitForElement('[aria-label*="Message list container" i]', THREAD_LOAD_TIMEOUT);
-      } catch {
-        log('err', `Timed out loading thread: ${item.name || item.id}`);
-        _stats.errors++;
-        emitProgress({ inbox: detectInboxType() });
-        continue;
-      }
-
-      // Let React finish rendering messages
-      await sleep(700);
-
-      // Extract
-      let data;
-      try {
-        data = extract();
-      } catch (err) {
-        log('err', `extract() threw: ${err.message}`);
-        _stats.errors++;
-        emitProgress({ inbox: detectInboxType() });
-        continue;
-      }
-
-      if (!data || data.error) {
-        log('err', `Extraction failed: ${data ? data.error : 'null'}`);
-        _stats.errors++;
-        emitProgress({ inbox: detectInboxType() });
-        continue;
-      }
-
-      // Date-range filter
-      const { filtered, filteredMessages } = filterByDateRange(data.messages, fromDate, toDate);
-
-      if (filteredMessages.length === 0) {
-        log('skip', `No messages in range: ${item.name || item.id}`);
-        _stats.skipped++;
-        emitProgress({ inbox: detectInboxType() });
-        await sleep(DELAY_BETWEEN_CONVS);
-        continue;
-      }
-
-      const output = { ...data, messages: filteredMessages, count: filteredMessages.length };
-      if (filtered) {
-        output.filtered    = true;
-        output.filter_from = fromDate.toISOString().slice(0, 10);
-        output.filter_to   = toDate.toISOString().slice(0, 10);
-      }
-
-      let downloaded = false;
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try { download(output); downloaded = true; break; }
-        catch (err) { if (attempt === 0) { log('err', `Download failed, retrying…`); await sleep(500); } }
-      }
-
-      if (downloaded) {
-        log('ok', `Downloaded (${filteredMessages.length} msgs): ${item.name || item.id}`);
-        _stats.downloaded++;
-      } else {
-        log('err', `Download failed after retry: ${item.name || item.id}`);
-        _stats.errors++;
-      }
-
+    const navigated = await navigateToConversation(item);
+    if (!navigated) {
+      log('err', `Could not navigate to: ${item.name || item.id} — skipping`);
+      _stats.errors++;
       emitProgress({ inbox: detectInboxType() });
-      await sleep(DELAY_BETWEEN_CONVS);
+      continue;
     }
 
-    scrollListDown(listContainer);
-    await sleep(SCROLL_WAIT);
+    if (item.realId) {
+      if (_seenIds.has(item.realId)) {
+        log('info', `Skipping duplicate: ${item.name || item.realId}`);
+        _stats.skipped++;
+        emitProgress({ inbox: detectInboxType() });
+        continue;
+      }
+      _seenIds.add(item.realId);
+    }
+
+    try {
+      await waitForElement('[aria-label*="Message list container" i]', THREAD_LOAD_TIMEOUT);
+    } catch {
+      log('err', `Timed out loading thread: ${item.name || item.id}`);
+      _stats.errors++;
+      emitProgress({ inbox: detectInboxType() });
+      continue;
+    }
+
+    await sleep(700);
+
+    let data;
+    try { data = extract(); }
+    catch (err) {
+      log('err', `extract() threw: ${err.message}`);
+      _stats.errors++;
+      emitProgress({ inbox: detectInboxType() });
+      continue;
+    }
+
+    if (!data || data.error) {
+      log('err', `Extraction failed: ${data ? data.error : 'null'}`);
+      _stats.errors++;
+      emitProgress({ inbox: detectInboxType() });
+      continue;
+    }
+
+    // Sidebar row name is more reliable than DOM header extraction for WEC
+    if (!data.customer_name && item.name) {
+      data.customer_name = item.name;
+      data.thread        = item.name;
+    }
+
+    const { filtered, filteredMessages } = filterByDateRange(data.messages, fromDate, toDate);
+
+    if (filteredMessages.length === 0) {
+      log('skip', `No messages in range: ${item.name || item.id}`);
+      _stats.skipped++;
+      emitProgress({ inbox: detectInboxType() });
+      await sleep(DELAY_BETWEEN_CONVS);
+      continue;
+    }
+
+    const output = { ...data, messages: filteredMessages, count: filteredMessages.length };
+    if (filtered) {
+      output.filtered    = true;
+      output.filter_from = fromDate.toISOString().slice(0, 10);
+      output.filter_to   = toDate.toISOString().slice(0, 10);
+    }
+
+    let downloaded = false;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { download(output); downloaded = true; break; }
+      catch (err) { if (attempt === 0) { log('err', 'Download failed, retrying…'); await sleep(500); } }
+    }
+
+    if (downloaded) {
+      log('ok', `Downloaded (${filteredMessages.length} msgs): ${item.name || item.id}`);
+      _stats.downloaded++;
+    } else {
+      log('err', `Download failed after retry: ${item.name || item.id}`);
+      _stats.errors++;
+    }
+
+    emitProgress({ inbox: detectInboxType() });
+    await sleep(DELAY_BETWEEN_CONVS);
   }
 }
 
@@ -735,7 +719,10 @@ function getConversationItems(container) {
     // Look for children that match a typical conversation row shape
     const rows = children.filter(el => {
       const r = el.getBoundingClientRect();
-      return r.height >= 50 && r.height <= 220 && r.width > 80 && r.left < half && r.left >= 0;
+      if (!(r.height >= 50 && r.height <= 220 && r.width > 80 && r.left < half && r.left >= 0)) return false;
+      // Skip placeholder / loading rows (e.g. "ჩატვირთვა…" = "Loading…")
+      const text = el.textContent.replace(/\s+/g, ' ').trim();
+      return text.length >= 4 && !/^[.…]+$/.test(text);
     });
 
     if (rows.length >= 2) {
@@ -781,14 +768,13 @@ function extractRowName(el) {
  *   5. Same sequence on the row and its ancestors
  */
 async function navigateToConversation(item) {
-  // Bail early if the virtual scroll has recycled this DOM node
   if (!document.body.contains(item.row)) return false;
 
-  // Scroll to center so elementsFromPoint has a valid coordinate
-  try { item.row.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch {}
-  await sleep(400);
+  // block:'nearest' causes the minimum sidebar scroll needed to make the row
+  // visible; 'center' was scrolling too much and triggering virtual-scroll recycling
+  try { item.row.scrollIntoView({ block: 'nearest', behavior: 'instant' }); } catch {}
+  await sleep(250);
 
-  // If the row disappeared after the scroll, give up
   if (!document.body.contains(item.row)) return false;
 
   const prevId = getSelectedItemId();
