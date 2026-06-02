@@ -177,14 +177,24 @@ function getSelectedItemId(url) {
 }
 
 /**
- * Detect which inbox type is active based on URL or page heading.
+ * Detect which inbox type is active based on URL path segment or page heading.
  * Returns one of: "WhatsApp" | "Messenger" | "Instagram" | "Unknown"
+ *
+ * MBS URL path patterns:
+ *   /latest/inbox/wec/...                → WhatsApp Business (WEC)
+ *   /latest/inbox/instagram_messaging/   → Instagram
+ *   /latest/inbox/messenger/             → Messenger
+ *   /latest/inbox  (no sub-path)         → Messenger (default)
  */
 function detectInboxType() {
+  const path = window.location.pathname.toLowerCase();
+  if (path.includes('/inbox/wec'))                  return 'WhatsApp';
+  if (path.includes('/inbox/instagram'))            return 'Instagram';
+  if (path.includes('/inbox/messenger'))            return 'Messenger';
+
   const href = window.location.href.toLowerCase();
-  if (href.includes('whatsapp')) return 'WhatsApp';
-  if (href.includes('instagram')) return 'Instagram';
-  if (href.includes('messenger') || href.includes('latest/inbox')) return 'Messenger';
+  if (href.includes('whatsapp'))                    return 'WhatsApp';
+  if (href.includes('instagram'))                   return 'Instagram';
 
   // Try to read the active tab label from the MBS inbox switcher
   const activeTab = document.querySelector('[role="tab"][aria-selected="true"]');
@@ -194,6 +204,9 @@ function detectInboxType() {
     if (/instagram/i.test(text)) return 'Instagram';
     if (/messenger/i.test(text)) return 'Messenger';
   }
+
+  // Default: anything under /latest/inbox is Messenger
+  if (path.includes('/latest/inbox')) return 'Messenger';
 
   return 'Unknown';
 }

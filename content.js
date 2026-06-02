@@ -662,11 +662,26 @@ async function runCrawl(fromDate, toDate) {
 // ─── Conversation list helpers ────────────────────────────────────────────
 
 /**
- * Find the scrollable container that holds the conversation list rows.
- * Tries multiple known patterns in priority order.
+ * Find the scrollable container that holds the conversation list.
+ * Primary: walk up from the first conversation anchor to its scrollable ancestor.
+ * Fallback: aria-label patterns, then any left-column scrollable div.
  */
 function findConversationListContainer() {
-  // Pattern 1: explicit aria-label on the inbox list
+  // Best signal: conversation anchors with selected_item_id in their href
+  const firstLink = document.querySelector('a[href*="selected_item_id"]');
+  if (firstLink) {
+    let el = firstLink.parentElement;
+    while (el && el !== document.body) {
+      const style = window.getComputedStyle(el);
+      const ov = style.overflow + ' ' + style.overflowY;
+      if (/auto|scroll/.test(ov) && el.scrollHeight > el.clientHeight + 10) {
+        return el;
+      }
+      el = el.parentElement;
+    }
+  }
+
+  // Fallback: explicit aria-label on a list role
   const byLabel = document.querySelector(
     '[aria-label*="conversation" i][role="list"],' +
     '[aria-label*="inbox" i][role="list"],' +
@@ -674,19 +689,16 @@ function findConversationListContainer() {
   );
   if (byLabel) return byLabel;
 
-  // Pattern 2: a scrollable div that contains multiple [role="row"] or [role="listitem"]
-  const allLists = document.querySelectorAll('[role="list"], [role="listbox"], [role="grid"]');
-  for (const list of allLists) {
-    const rows = list.querySelectorAll('[role="row"], [role="listitem"], [role="option"]');
-    if (rows.length >= 2) return list;
-  }
-
-  // Pattern 3: fall back to first large scrollable div in the left column
-  const scrollables = document.querySelectorAll('div[style*="overflow"]');
+  // Fallback: first large scrollable div on the left side of the viewport
+  const scrollables = document.querySelectorAll('div');
   for (const el of scrollables) {
+    const style = window.getComputedStyle(el);
+    const ov = style.overflow + ' ' + style.overflowY;
+    if (!/auto|scroll/.test(ov)) continue;
     const rect = el.getBoundingClientRect();
-    // Left side of viewport, taller than 300px
-    if (rect.left < 400 && rect.height > 300) return el;
+    if (rect.left < 400 && rect.height > 300 && el.scrollHeight > el.clientHeight + 10) {
+      return el;
+    }
   }
 
   return null;
@@ -694,48 +706,48 @@ function findConversationListContainer() {
 
 /**
  * Get all conversation row elements from the list container.
- * Uses role="row" | role="listitem" | role="option" as primary selector,
- * falls back to direct children with known structural depth.
+ * Primary: anchor tags with selected_item_id — the definitive MBS conversation link.
+ * Fallback: role-based selectors.
  */
 function getConversationRows(container) {
-  const rows = container.querySelectorAll('[role="row"], [role="listitem"], [role="option"]');
-  if (rows.length) return Array.from(rows);
+  // Anchors with selected_item_id are the most reliable signal
+  const links = container.querySelectorAll('a[href*="selected_item_id"]');
+  if (links.length) return Array.from(links);
 
-  // Fallback: direct children that look like conversation rows (have a link or clickable)
-  return Array.from(container.children).filter(el =>
-    el.querySelector('a[href*="selected_item_id"]') ||
-    el.getAttribute('data-testid')
-  );
+  // Role-based fallback
+  const byRole = container.querySelectorAll('[role="row"], [role="listitem"], [role="option"]');
+  if (byRole.length) return Array.from(byRole);
+
+  return [];
 }
 
 /**
- * Extract a stable identifier for a conversation row.
- * Tries data-id, href param, aria-label hash.
+ * Extract a stable identifier from a conversation row.
+ * Works whether `row` is the <a> itself or a wrapper containing one.
  */
 function getRowId(row) {
-  // Try anchor href
-  const link = row.querySelector('a[href*="selected_item_id"]');
-  if (link) {
-    const id = new URL(link.href, window.location.origin).searchParams.get('selected_item_id');
-    if (id) return id;
+  // row might be the <a> directly
+  const href = row.tagName === 'A' ? row.href : (row.querySelector('a[href*="selected_item_id"]') || {}).href;
+  if (href) {
+    try {
+      const id = new URL(href).searchParams.get('selected_item_id');
+      if (id) return id;
+    } catch { /* ignore malformed URLs */ }
   }
-  // Try data attributes
   const dataId = row.getAttribute('data-id') || row.getAttribute('data-thread-id');
   if (dataId) return dataId;
 
-  // Last resort: stable-ish text hash
   const name = getRowName(row);
   return name ? 'name:' + name : null;
 }
 
-/** Extract display name from a conversation row element. */
+/** Extract display name from a conversation row or anchor element. */
 function getRowName(row) {
-  // Prefer a named heading-like element
   for (const sel of ['[role="heading"]', 'strong', 'b', 'span[dir="auto"]']) {
     const el = row.querySelector(sel);
     if (el && el.textContent.trim()) return el.textContent.trim();
   }
-  return row.getAttribute('aria-label') || null;
+  return row.getAttribute('aria-label') || row.getAttribute('title') || null;
 }
 
 /** Scroll the list container down by its visible height to trigger lazy loading. */
