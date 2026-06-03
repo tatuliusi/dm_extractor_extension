@@ -502,8 +502,17 @@ async function startCrawler({ from, to }) {
 }
 
 function pauseCrawler()  { if (_state === 'running')  _state = 'paused';  }
-function resumeCrawler() { if (_state === 'paused')   { _state = 'running'; if (_pauseResolve) _pauseResolve(); } }
-function stopCrawler()   { _state = 'stopped'; _stopSignal = true; if (_pauseResolve) _pauseResolve(); }
+function resumeCrawler() {
+  if (_state === 'paused') {
+    _state = 'running';
+    if (_pauseResolve) { const r = _pauseResolve; _pauseResolve = null; r(); }
+  }
+}
+function stopCrawler() {
+  _state = 'stopped';
+  _stopSignal = true;
+  if (_pauseResolve) { const r = _pauseResolve; _pauseResolve = null; r(); }
+}
 
 /** Wait while paused, resolve immediately if not paused or if stopped. */
 function waitIfPaused() {
