@@ -474,7 +474,7 @@ function download(data) {
   a.style.display = 'none';
   document.body.appendChild(a);
   a.click();
-  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 5000);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
