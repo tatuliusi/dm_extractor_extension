@@ -339,6 +339,19 @@ function nearestDirection(node, root) {
     }
     cur = cur.parentElement;
   }
+
+  // Position-based fallback: outbound bubbles sit on the right side of the thread,
+  // inbound on the left. More robust than obfuscated class names when Meta redeploys.
+  try {
+    const nodeRect = node.getBoundingClientRect();
+    const rootRect = root.getBoundingClientRect();
+    if (rootRect.width > 0) {
+      const relX = (nodeRect.left + nodeRect.width / 2 - rootRect.left) / rootRect.width;
+      if (relX > 0.55) return 'outbound';
+      if (relX < 0.45) return 'inbound';
+    }
+  } catch {}
+
   return 'unknown';
 }
 
