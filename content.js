@@ -176,8 +176,10 @@ function initPanelUI(shadow) {
     if (!dragging) return;
     panel.style.right  = 'unset';
     panel.style.bottom = 'unset';
-    panel.style.left   = (e.clientX - dragOffX) + 'px';
-    panel.style.top    = (e.clientY - dragOffY) + 'px';
+    const x = Math.max(0, Math.min(e.clientX - dragOffX, window.innerWidth  - panel.offsetWidth));
+    const y = Math.max(0, Math.min(e.clientY - dragOffY, window.innerHeight - panel.offsetHeight));
+    panel.style.left = x + 'px';
+    panel.style.top  = y + 'px';
   });
   document.addEventListener('mouseup', () => { dragging = false; });
 
