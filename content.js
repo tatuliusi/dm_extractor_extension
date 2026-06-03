@@ -382,6 +382,7 @@ function extract() {
   // Walk every child of the region; maintain a running "current date" for messages
   let currentDate = null;
 
+  const seenMsgIds = new Set();
   const walker = document.createTreeWalker(region, NodeFilter.SHOW_ELEMENT);
   let node;
 
@@ -406,7 +407,8 @@ function extract() {
     if (!msgId) continue;
 
     // Avoid duplicates (walker visits descendants too)
-    if (messages.some(m => m.id === msgId)) continue;
+    if (seenMsgIds.has(msgId)) continue;
+    seenMsgIds.add(msgId);
 
     const text = bubbleText(node);
     if (!text) continue; // skip empty / media-only for now
