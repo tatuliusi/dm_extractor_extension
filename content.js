@@ -469,7 +469,7 @@ function download(data) {
 const DELAY_BETWEEN_CONVS = 2500; // ms between conversations
 const SCROLL_WAIT         = 1500; // ms to wait after scrolling for new items
 const THREAD_LOAD_TIMEOUT = 8000; // ms to wait for thread DOM
-const MAX_EMPTY_SCROLLS   = 2;    // stop scrolling after N non-productive scrolls
+const MAX_EMPTY_SCROLLS   = 4;    // stop scrolling after N non-productive scrolls
 
 /**
  * Start the batch crawler.
