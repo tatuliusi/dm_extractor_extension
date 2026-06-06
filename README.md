@@ -93,6 +93,27 @@ Each downloaded file is a JSON object:
 
 ---
 
+## Recovering Conversations Moved to Done
+
+If the crawler accidentally moves conversations to the **Done** folder, navigate to the Done folder directly and move them back:
+
+```
+https://business.facebook.com/latest/inbox/{inbox_type}?asset_id={ASSET_ID}&business_id={BUSINESS_ID}&mailbox_id={MAILBOX_ID}&folder=DONE
+```
+
+Replace `{inbox_type}` with `instagram_direct`, `messenger`, or `whatsapp`.  
+Copy `ASSET_ID`, `BUSINESS_ID`, and `MAILBOX_ID` from the URL of your active inbox — they look like long numeric strings.
+
+**Example (Instagram):**
+
+```
+https://business.facebook.com/latest/inbox/instagram_direct?asset_id=807781679079979&business_id=527561502714866&mailbox_id=807781679079979&folder=DONE
+```
+
+Once in Done, select affected conversations and use **Mark as Open** to restore them.
+
+---
+
 ## Known Limitations
 
 | Limitation | Details |
