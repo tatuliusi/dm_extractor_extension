@@ -12,3 +12,6 @@ dist/
 *.zip
 *.crx
 *.pem
+
+# Node
+node_modules/
