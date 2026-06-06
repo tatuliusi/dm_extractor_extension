@@ -1,4 +1,8 @@
 {
+  "scripts": {
+    "test": "node test_extraction.js",
+    "test:integration": "node integration_test.js"
+  },
   "devDependencies": {
     "puppeteer-core": "^25.1.0"
   },
