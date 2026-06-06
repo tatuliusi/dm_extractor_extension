@@ -277,7 +277,17 @@ function initPanelUI(shadow) {
 
 /** Find the scrollable message list container. */
 function findThreadRegion() {
-  return document.querySelector('[aria-label*="Message list container" i]');
+  const el = document.querySelector('[aria-label*="Message list container" i]');
+  if (el) return el;
+
+  // Localised aria-label or changed element role: find a large list/log/feed
+  // element in the right portion of the viewport (not the narrow left sidebar).
+  const minLeft = window.innerWidth * 0.3;
+  for (const c of document.querySelectorAll('[role="list"],[role="log"],[role="feed"]')) {
+    const r = c.getBoundingClientRect();
+    if (r.left >= minLeft && r.width >= 200 && r.height >= 200) return c;
+  }
+  return null;
 }
 
 /** Extract the contact's display name from the open conversation header. */
@@ -292,7 +302,10 @@ function findCustomerName() {
   ];
   for (const sel of selectors) {
     const el = document.querySelector(sel);
-    if (el && el.textContent.trim()) return el.textContent.trim();
+    if (el) {
+      const t = cleanText(el);
+      if (t) return t;
+    }
   }
 
   // WEC/WhatsApp: contact name renders as a leaf <div tabindex="-1"> in the
@@ -307,6 +320,20 @@ function findCustomerName() {
     if (r.width < 10 || r.height < 10) continue;
     if (r.left > window.innerWidth * 0.75) continue;  // not in the right info panel
     if (r.top  > window.innerHeight * 0.25) continue; // header is in the top quarter
+    return t;
+  }
+
+  // Instagram: thread title sometimes lives in a <span> inside the thread header
+  // area (right pane top bar) — look for short non-empty text in the top strip.
+  const half = window.innerWidth / 2;
+  for (const span of document.querySelectorAll('span[dir="auto"], span')) {
+    const t = cleanText(span);
+    if (!t || t.length < 2 || t.length > 80) continue;
+    if (span.children.length > 2) continue; // avoid picking up message bubbles
+    const r = span.getBoundingClientRect();
+    if (r.top > window.innerHeight * 0.12) continue; // top bar only
+    if (r.left < half * 0.5) continue;               // right pane only
+    if (r.width < 5 || r.height < 5) continue;
     return t;
   }
 
@@ -418,7 +445,10 @@ function extract() {
 
     // ── Message bubble ──────────────────────────────────────────────────
     const msgId = node.getAttribute('data-message-id') ||
-                  node.getAttribute('data-mid');
+                  node.getAttribute('data-mid') ||
+                  node.getAttribute('data-msgid') ||
+                  node.getAttribute('data-focusable-id') ||
+                  node.getAttribute('data-item-id');
     if (!msgId) continue;
 
     // Avoid duplicates (walker visits descendants too)
@@ -445,6 +475,34 @@ function extract() {
       receipt   : receipt || undefined,
       type      : 'text',
     });
+  }
+
+  // Structural fallback: when no data-attribute message IDs exist in the DOM
+  // (e.g. WEC / WhatsApp Business inbox after a Meta DOM update), collect text
+  // bubbles via dir="auto" elements instead.
+  if (messages.length === 0) {
+    let synIdx = 0;
+    const seenKeys = new Set();
+    for (const el of region.querySelectorAll('[dir="auto"]')) {
+      if (el.closest('[aria-hidden="true"]') || el.closest('[role="button"]')) continue;
+      const text = bubbleText(el);
+      if (!text) continue;
+      const r = el.getBoundingClientRect();
+      if (r.height < 5 || r.width < 5) continue;
+      const key = `${Math.round(r.top / 5)}_${text.slice(0, 40)}`;
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      const direction = nearestDirection(el, region);
+      messages.push({
+        id        : `synth_${synIdx++}`,
+        date      : currentDate,
+        direction,
+        text,
+        type      : 'text',
+      });
+    }
+    if (messages.length > 0)
+      console.log(`[DM Extractor] Structural fallback: ${messages.length} messages via dir="auto"`);
   }
 
   return {
@@ -546,6 +604,7 @@ async function runCrawl(fromDate, toDate) {
     return;
   }
   log('info', 'Conversation list container found.');
+  await sleep(500); // brief wait for virtual-list rows to render
 
   let processed = 0;
   let emptyScrolls = 0;
@@ -580,6 +639,7 @@ async function runCrawl(fromDate, toDate) {
     emitProgress({ inbox: detectInboxType(), convName: item.name || item.id });
 
     const navigated = await navigateToConversation(item);
+    checkForDoneTrigger(`navigating to ${item.name || item.id}`);
     if (!navigated) {
       log('err', `Could not navigate to: ${item.name || item.id} — skipping`);
       _stats.errors++;
@@ -600,7 +660,10 @@ async function runCrawl(fromDate, toDate) {
     try {
       await waitForElement('[aria-label*="Message list container" i]', THREAD_LOAD_TIMEOUT);
       // Wait for at least one message bubble to render (prevents extracting a blank thread)
-      await waitForElement('[data-message-id],[data-mid]', 5000).catch(() => null);
+      await waitForElement(
+        '[data-message-id],[data-mid],[data-msgid],[data-focusable-id],[data-item-id]',
+        3000
+      ).catch(() => null);
     } catch {
       log('err', `Timed out loading thread: ${item.name || item.id}`);
       _stats.errors++;
@@ -752,9 +815,9 @@ function getConversationItems(container) {
   }
 
   // ── Strategy B ───────────────────────────────────────────────────────────
-  // Descend through single-child wrappers (virtualization layers) up to 4 levels deep.
+  // Descend through single-child wrappers (virtualization layers) up to 6 levels deep.
   let level = container;
-  for (let depth = 0; depth < 4; depth++) {
+  for (let depth = 0; depth < 6; depth++) {
     const children = Array.from(level.children);
 
     // Look for children that match a typical conversation row shape
@@ -777,12 +840,60 @@ function getConversationItems(container) {
       });
     }
 
-    // Exactly one child → might be a virtualization wrapper, go deeper
     if (children.length === 1) {
+      // Single child → likely a virtualization wrapper, go deeper
       level = children[0];
+    } else if (children.length > 1) {
+      // Multiple children but no rows matched yet — the found container may be a
+      // broader sidebar that also holds a search box, filter tabs, or restriction
+      // banners alongside the actual conversation list. Pick the tallest left-side
+      // child (most likely the conversation list wrapper) and descend into it.
+      const candidate = children
+        .filter(el => { const r = el.getBoundingClientRect(); return r.left < half && r.height > 100 && r.width > 80; })
+        .sort((a, b) => b.getBoundingClientRect().height - a.getBoundingClientRect().height)[0];
+      if (candidate && candidate !== level) {
+        console.log(`[DM Extractor] Strategy B depth ${depth}: ${children.length} siblings, descending into tallest (${Math.round(candidate.getBoundingClientRect().height)}px)`);
+        level = candidate;
+      } else {
+        break;
+      }
     } else {
       break;
     }
+  }
+
+  // ── Strategy C: deep flat scan ───────────────────────────────────────────
+  // Fallback when Strategy B's level-by-level descent misses rows (e.g. WEC
+  // virtual lists where the row elements are at an unexpected depth or branch).
+  // querySelectorAll('*') finds rows at any depth; the outer-row filter keeps
+  // only the outermost matching element per conversation (not its inner spans).
+  const allEls = Array.from(container.querySelectorAll('*'));
+  const rowCandidates = allEls.filter(el => {
+    const r = el.getBoundingClientRect();
+    if (!(r.height >= 50 && r.height <= 220 && r.width > 100 && r.left < half && r.left >= 0)) return false;
+    const text = el.textContent.replace(/\s+/g, ' ').trim();
+    return text.length >= 4 && text.length <= 400 && !/^[.…]+$/.test(text);
+  });
+  const outerRows = rowCandidates.filter(el =>
+    !rowCandidates.some(other => other !== el && other.contains(el))
+  );
+  if (outerRows.length > 0) {
+    console.log('[DM Extractor] Strategy C (deep):', outerRows.length, 'rows');
+    const seen = new Set();
+    return outerRows
+      .filter(row => {
+        const fp = row.textContent.replace(/\s+/g, ' ').trim().slice(0, 80);
+        if (seen.has(fp)) return false;
+        seen.add(fp);
+        return true;
+      })
+      .map(row => ({
+        id  : 'fp:' + row.textContent.replace(/\s+/g, ' ').trim().slice(0, 80),
+        href: null,
+        name: extractRowName(row),
+        anchor: null,
+        row,
+      }));
   }
 
   console.log('[DM Extractor] No rows found in container');
@@ -790,18 +901,27 @@ function getConversationItems(container) {
 }
 
 /** Pull the contact name out of a conversation row element. */
+/** Return text from el with aria-hidden descendants stripped (prevents duplicated names). */
+function cleanText(el) {
+  const clone = el.cloneNode(true);
+  clone.querySelectorAll('[aria-hidden="true"]').forEach(n => n.remove());
+  return clone.textContent.replace(/\s+/g, ' ').trim();
+}
+
 function extractRowName(el) {
   for (const sel of ['[role="heading"]', 'strong', 'b', 'span[dir="auto"]']) {
     const found = el.querySelector(sel);
-    if (found && found.textContent.trim()) return found.textContent.trim();
+    if (found) {
+      const t = cleanText(found);
+      if (t) return t;
+    }
   }
   const label = el.getAttribute('aria-label');
   if (label) return label.split(',')[0].trim() || label.trim();
   const title = el.getAttribute('title');
   if (title) return title.trim();
   // WEC rows: contact name/phone comes first in textContent before any Georgian message text.
-  // Extract the leading Latin/digit/symbol run (phone numbers and non-Georgian names).
-  const text = el.textContent.replace(/\s+/g, ' ').trim();
+  const text = cleanText(el);
   const latinPrefix = text.match(/^([A-Za-z0-9 +\-_.@]{1,60})(?=[ა-ჿ]|$)/);
   if (latinPrefix && latinPrefix[1].trim()) return latinPrefix[1].trim();
   return null;
@@ -869,10 +989,16 @@ async function navigateToConversation(item) {
     if (id) { item.realId = id; return true; }
   }
 
-  // 3. React fiber traversal — call onMouseDown/onClick handler directly
-  if (reactClick(item.row)) {
-    const id = await waitForAnyIdChange(prevId, 2500);
-    if (id) { item.realId = id; return true; }
+  // 3. React fiber traversal on the row and its inner descendants
+  const innerEls = [item.row, ...Array.from(item.row.querySelectorAll('div,li,span,a'))
+    .filter(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; })
+    .slice(0, 12)];
+  for (const el of innerEls) {
+    if (isDangerousActionEl(el)) continue;
+    if (reactClick(el)) {
+      const id = await waitForAnyIdChange(prevId, 2000);
+      if (id) { item.realId = id; return true; }
+    }
   }
 
   // 4. Full pointer+mouse sequence on every element at row center (topmost first)
@@ -886,6 +1012,10 @@ async function navigateToConversation(item) {
       e => e !== document.body && e !== document.documentElement && !isDangerousActionEl(e)
     );
     for (const el of stack) {
+      if (reactClick(el)) {
+        const id = await waitForAnyIdChange(prevId, 1200);
+        if (id) { item.realId = id; return true; }
+      }
       pointerClick(el);
       const id = await waitForAnyIdChange(prevId, 800);
       if (id) { item.realId = id; return true; }
@@ -901,6 +1031,21 @@ async function navigateToConversation(item) {
     if (id) { item.realId = id; return true; }
   }
 
+  return false;
+}
+
+/**
+ * Safety check: return true if the current URL suggests a conversation was
+ * moved to Done/archive. Logs a loud warning if detected.
+ */
+function checkForDoneTrigger(context) {
+  const url = window.location.href.toLowerCase();
+  if (/mailbox[_=]done|folder[=_]done|archive/i.test(url)) {
+    console.error('[DM Extractor] ⚠ DONE/ARCHIVE URL DETECTED after', context,
+      '— url:', window.location.href,
+      '. This should never happen. Please report this to the developer.');
+    return true;
+  }
   return false;
 }
 
@@ -922,17 +1067,17 @@ function isDangerousActionEl(el) {
 }
 
 /**
- * Dispatch the full pointer + mouse event sequence a real browser click produces.
- * Covers handlers listening for PointerEvent, MouseEvent, or both.
+ * Dispatch pointer+mouse down/up/click WITHOUT hover events.
+ * Hover events (pointerover/mouseover/pointermove/mousemove) are intentionally
+ * omitted: MBS reveals action buttons (Done, Delete, Spam) on hover, and
+ * dispatching them caused those buttons to appear and get triggered by
+ * subsequent click events.
  */
 function pointerClick(el) {
+  if (isDangerousActionEl(el)) return;
   const p = { bubbles: true, cancelable: true, view: window, isPrimary: true, button: 0, buttons: 1, pointerId: 1 };
   const m = { bubbles: true, cancelable: true, view: window, button: 0, buttons: 1 };
   try {
-    el.dispatchEvent(new PointerEvent('pointerover',  p));
-    el.dispatchEvent(new MouseEvent('mouseover',      m));
-    el.dispatchEvent(new PointerEvent('pointermove',  p));
-    el.dispatchEvent(new MouseEvent('mousemove',      m));
     el.dispatchEvent(new PointerEvent('pointerdown',  p));
     el.dispatchEvent(new MouseEvent('mousedown',      m));
     el.dispatchEvent(new PointerEvent('pointerup',    p));
@@ -969,9 +1114,15 @@ function reactClick(el) {
     );
     if (!key) return false;
     let fiber = el[key];
-    while (fiber) {
+    let depth = 0;
+    while (fiber && depth < 20) {
       const props = fiber.memoizedProps;
       if (props) {
+        // Skip if this fiber's aria-label or text looks like a Done/action button
+        const label = (props['aria-label'] || props['title'] || '').toLowerCase();
+        if (/done|მზადაა|delete|spam|სპამი|archive|mark as/i.test(label)) {
+          fiber = fiber.return; depth++; continue;
+        }
         for (const name of ['onMouseDown', 'onClick', 'onPointerDown']) {
           if (typeof props[name] === 'function') {
             const evt = new MouseEvent(
@@ -984,6 +1135,7 @@ function reactClick(el) {
         }
       }
       fiber = fiber.return;
+      depth++;
     }
   } catch { }
   return false;
