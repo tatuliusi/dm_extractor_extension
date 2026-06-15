@@ -83,6 +83,17 @@ const GEORGIAN_MONTHS = {
   'მაი':4,'ივნ':5,'ივლ':6,'აგვ':7,
   'სექ':8,'ოქტ':9,'ნოე':10,'დეკ':11,
 };
+// Georgian weekday abbreviations/full names (JS day index: 0=Sun, 1=Mon … 6=Sat)
+// WEC date dividers use short forms like "შაბ, 19:42" or "ოთხ"
+const GEORGIAN_WEEKDAYS = {
+  'ორშ':1,'ორშ.':1,'ორშაბათი':1,     // Monday
+  'სამ':2,'სამ.':2,'სამშაბათი':2,     // Tuesday
+  'ოთხ':3,'ოთხ.':3,'ოთხშაბათი':3,    // Wednesday
+  'ხუთ':4,'ხუთ.':4,'ხუთშაბათი':4,    // Thursday
+  'პარ':5,'პარ.':5,'პარასკევი':5,     // Friday
+  'შაბ':6,'შაბ.':6,'შაბათი':6,       // Saturday
+  'კვი':0,'კვი.':0,'კვირა':0,        // Sunday
+};
 
 /**
  * Parse a human-readable date label from MBS thread dividers into a Date object.
@@ -107,9 +118,9 @@ function parseDateLabel(label) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  if (lower === 'today') return new Date(today);
+  if (lower === 'today' || raw === 'დღეს') return new Date(today);
 
-  if (lower === 'yesterday') {
+  if (lower === 'yesterday' || raw === 'გუშინ') {
     const d = new Date(today);
     d.setDate(d.getDate() - 1);
     return d;
@@ -120,6 +131,17 @@ function parseDateLabel(label) {
   if (dayIndex !== -1) {
     const d = new Date(today);
     const diff = (today.getDay() - dayIndex + 7) % 7 || 7; // always go back at least 1 day
+    d.setDate(d.getDate() - diff);
+    return d;
+  }
+
+  // Georgian weekday: "შაბ, 19:42" | "ოთხ." | "ოთხშაბათი"
+  // Strip optional trailing ", HH:MM" time portion before lookup.
+  const geoDay = raw.replace(/[,\.]\s*\d{1,2}:\d{2}.*$/, '').trim();
+  const geoWeekIdx = GEORGIAN_WEEKDAYS[geoDay];
+  if (geoWeekIdx !== undefined) {
+    const d = new Date(today);
+    const diff = (today.getDay() - geoWeekIdx + 7) % 7 || 7;
     d.setDate(d.getDate() - diff);
     return d;
   }

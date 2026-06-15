@@ -627,6 +627,8 @@ async function runCrawl(fromDate, toDate) {
 
   let processed = 0;
   let emptyScrolls = 0;
+  let consecutiveTooOld = 0;
+  const MAX_CONSECUTIVE_TOO_OLD = 3;
 
   while (!_stopSignal) {
     await waitIfPaused();
@@ -714,15 +716,26 @@ async function runCrawl(fromDate, toDate) {
       data.thread        = item.name;
     }
 
-    const { filtered, filteredMessages } = filterByDateRange(data.messages, fromDate, toDate);
+    const { filtered, filteredMessages, tooOld } = filterByDateRange(data.messages, fromDate, toDate);
 
     if (filteredMessages.length === 0) {
       log('skip', `No messages in range: ${item.name || item.id}`);
       _stats.skipped++;
       emitProgress({ inbox: detectInboxType() });
+      if (tooOld) {
+        consecutiveTooOld++;
+        if (consecutiveTooOld >= MAX_CONSECUTIVE_TOO_OLD) {
+          log('info', `Stopped early: ${MAX_CONSECUTIVE_TOO_OLD} consecutive conversations older than start date.`);
+          break;
+        }
+      } else {
+        consecutiveTooOld = 0;
+      }
       await sleep(DELAY_BETWEEN_CONVS);
       continue;
     }
+
+    consecutiveTooOld = 0;
 
     const output = {
       ...data,
@@ -1225,7 +1238,7 @@ function scrollListDown(container) {
  * @returns {{ filtered: boolean, filteredMessages: Array }}
  */
 function filterByDateRange(messages, fromDate, toDate) {
-  if (!messages.length) return { filtered: false, filteredMessages: [] };
+  if (!messages.length) return { filtered: false, filteredMessages: [], tooOld: false };
 
   // Find the last message that carries a parseable date label
   let lastDate = null;
@@ -1236,11 +1249,13 @@ function filterByDateRange(messages, fromDate, toDate) {
 
   // If no date is parseable, include conservatively (can't tell → don't skip)
   if (!lastDate || dateInRange(lastDate, fromDate, toDate)) {
-    return { filtered: false, filteredMessages: messages };
+    return { filtered: false, filteredMessages: messages, tooOld: false };
   }
 
-  // Last message is outside the range → skip this conversation entirely
-  return { filtered: true, filteredMessages: [] };
+  // Last message is outside the range → skip this conversation entirely.
+  // tooOld=true signals the crawler to stop early (conversations are newest-first).
+  const tooOld = lastDate < fromDate;
+  return { filtered: true, filteredMessages: [], tooOld };
 }
 
 // ─── Bridge event emitters ────────────────────────────────────────────────
