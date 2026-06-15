@@ -1052,17 +1052,28 @@ function checkForDoneTrigger(context) {
 /**
  * Return true if `el` is a conversation-row action button (Done, Delete, Spam, Star…)
  * that must never be triggered by the crawler's click strategies.
+ *
+ * WEC rows contain a div[role="grid"]._4a51 that holds Done / Follow-up buttons.
+ * The anchor wrappers inside (a[role="row"]) have no aria-label themselves, so
+ * checking self-attributes isn't enough — we must also block any element that
+ * sits inside that grid container.
  */
 function isDangerousActionEl(el) {
   const label = (el.getAttribute('aria-label') || '').toLowerCase();
   const title = (el.getAttribute('title') || '').toLowerCase();
   const combined = label + ' ' + title;
-  if (/done|მზადაა|delete|spam|სპამი|star|flag|archive|mark as/i.test(combined)) return true;
+  if (/done|მზადაა|გადატანა|delete|spam|სპამი|star|flag|archive|mark as/i.test(combined)) return true;
   // Button/role="button" with short action-like text
   if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button') {
     const text = (el.textContent || '').trim();
     if (text.length < 40 && /done|მზადაა|delete|spam|სპამი|star|flag/i.test(text)) return true;
   }
+  // Any element inside the WEC action-buttons grid (role="grid"/_4a51) or
+  // a gridcell is an action button (Done / Follow-up) — never click it.
+  try {
+    if (el.closest('[role="grid"],[role="gridcell"]')) return true;
+    if (el.closest('._4a51')) return true;
+  } catch { }
   return false;
 }
 
