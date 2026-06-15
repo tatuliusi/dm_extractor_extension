@@ -292,6 +292,25 @@ function findThreadRegion() {
 
 /** Extract the contact's display name from the open conversation header. */
 function findCustomerName() {
+  // WEC/WhatsApp: the conversation detail header (BizInboxDetailViewHeaderSectionWrapper)
+  // shows the contact's display name in a _4ik4._4ik5 title line. This is more reliable
+  // than the sidebar row name (which may show a phone number instead of a display name).
+  const detailHeader = document.querySelector('[data-pagelet="BizInboxDetailViewHeaderSectionWrapper"]');
+  if (detailHeader) {
+    const nameEl = detailHeader.querySelector('._4ik4._4ik5');
+    if (nameEl) {
+      const t = cleanText(nameEl);
+      if (t) return t;
+    }
+  }
+
+  // Also check data-surface attribute path for the detail view header.
+  const detailSurface = document.querySelector('[data-surface*="detail_view_header"] ._4ik4._4ik5');
+  if (detailSurface) {
+    const t = cleanText(detailSurface);
+    if (t) return t;
+  }
+
   const selectors = [
     'h1[dir="auto"]', 'h2[dir="auto"]', 'h3[dir="auto"]', 'h4[dir="auto"]',
     '[data-testid="conversation_name"]',
@@ -909,6 +928,14 @@ function cleanText(el) {
 }
 
 function extractRowName(el) {
+  // WEC/WhatsApp: contact name is wrapped in a span with data-surface ending in
+  // "thread_title". This works for any script (Georgian, Cyrillic, Latin, etc.).
+  const titleNode = el.querySelector('[data-surface*="thread_title"]');
+  if (titleNode) {
+    const t = cleanText(titleNode);
+    if (t) return t;
+  }
+
   for (const sel of ['[role="heading"]', 'strong', 'b', 'span[dir="auto"]']) {
     const found = el.querySelector(sel);
     if (found) {
