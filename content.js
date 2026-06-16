@@ -660,7 +660,7 @@ async function runCrawl(fromDate, toDate) {
     emitProgress({ inbox: detectInboxType(), convName: item.name || item.id });
 
     const navigated = await navigateToConversation(item);
-    checkForDoneTrigger(`navigating to ${item.name || item.id}`);
+    if (checkForDoneTrigger(`navigating to ${item.name || item.id}`)) break;
     if (!navigated) {
       log('err', `Could not navigate to: ${item.name || item.id} — skipping`);
       _stats.errors++;
@@ -1029,8 +1029,11 @@ async function navigateToConversation(item) {
     if (id) { item.realId = id; return true; }
   }
 
-  // 3. React fiber traversal on the row and its inner descendants
-  const innerEls = [item.row, ...Array.from(item.row.querySelectorAll('div,li,span,a'))
+  // 3. React fiber traversal on the row and its inner descendants.
+  // Anchors (<a>) are intentionally excluded: in WEC rows the ONLY anchors are
+  // the Done / Follow-up action buttons (a[role="row"]). Legitimate WEC
+  // navigation is handled by React click handlers on div elements.
+  const innerEls = [item.row, ...Array.from(item.row.querySelectorAll('div,li,span'))
     .filter(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; })
     .slice(0, 12)];
   for (const el of innerEls) {
@@ -1041,9 +1044,11 @@ async function navigateToConversation(item) {
     }
   }
 
-  // 4. Full pointer+mouse sequence on every element at row center (topmost first)
+  // 4. Pointer+mouse sequence at a safe point in the LEFT quarter of the row
+  // (avatar/name area). Action buttons are absolutely-positioned on the RIGHT
+  // side and may appear in elementsFromPoint even at center, so we stay left.
   const rect = item.row.getBoundingClientRect();
-  const cx = rect.left + rect.width / 2;
+  const cx = rect.left + rect.width * 0.25;  // 25% from left = avatar/name zone
   const cy = rect.top  + rect.height / 2;
   const inViewport = rect.width > 0 && rect.height > 0 &&
     cy >= 0 && cy <= window.innerHeight && cx >= 0 && cx <= window.innerWidth;
@@ -1076,14 +1081,15 @@ async function navigateToConversation(item) {
 
 /**
  * Safety check: return true if the current URL suggests a conversation was
- * moved to Done/archive. Logs a loud warning if detected.
+ * moved to Done/archive. Stops the crawler immediately if detected.
  */
 function checkForDoneTrigger(context) {
   const url = window.location.href.toLowerCase();
-  if (/mailbox[_=]done|folder[=_]done|archive/i.test(url)) {
-    console.error('[DM Extractor] ⚠ DONE/ARCHIVE URL DETECTED after', context,
-      '— url:', window.location.href,
-      '. This should never happen. Please report this to the developer.');
+  if (/mailbox[_=]done|folder[=_]done|archive|folder=done/i.test(url)) {
+    const msg = `⚠ DONE/ARCHIVE FOLDER DETECTED after ${context} — stopping crawler to prevent further moves. URL: ${window.location.href}`;
+    console.error('[DM Extractor]', msg);
+    log('err', msg);
+    stopCrawler(); // halt immediately
     return true;
   }
   return false;
@@ -1093,10 +1099,12 @@ function checkForDoneTrigger(context) {
  * Return true if `el` is a conversation-row action button (Done, Delete, Spam, Star…)
  * that must never be triggered by the crawler's click strategies.
  *
- * WEC rows contain a div[role="grid"]._4a51 that holds Done / Follow-up buttons.
- * The anchor wrappers inside (a[role="row"]) have no aria-label themselves, so
- * checking self-attributes isn't enough — we must also block any element that
- * sits inside that grid container.
+ * Three layers of defence:
+ *   1. Self aria-label / title keyword match (catches gridcells directly).
+ *   2. Ancestor check via closest() — catches anchor wrappers (a[role="row"])
+ *      that sit inside the action grid but carry no aria-label themselves.
+ *   3. Descendant check via querySelector — catches containers of dangerous
+ *      gridcells even when the structural roles/classes change across deploys.
  */
 function isDangerousActionEl(el) {
   const label = (el.getAttribute('aria-label') || '').toLowerCase();
@@ -1108,12 +1116,22 @@ function isDangerousActionEl(el) {
     const text = (el.textContent || '').trim();
     if (text.length < 40 && /done|მზადაა|delete|spam|სპამი|star|flag/i.test(text)) return true;
   }
-  // Any element inside the WEC action-buttons grid (role="grid"/_4a51) or
-  // a gridcell is an action button (Done / Follow-up) — never click it.
+  // Ancestor check: inside the WEC action-buttons grid.
   try {
     if (el.closest('[role="grid"],[role="gridcell"]')) return true;
     if (el.closest('._4a51')) return true;
   } catch { }
+  // Anchor-specific descendant check: WEC action buttons (Done / Follow-up)
+  // are wrapped in <a role="row"> elements that contain gridcells but carry
+  // no aria-label themselves. Block any <a> that has role="row" OR whose
+  // subtree contains a gridcell / dangerous Georgian label.
+  // Scoped to <a> only so the full row wrapper div is never falsely blocked.
+  if (el.tagName === 'A') {
+    if (el.getAttribute('role') === 'row') return true;
+    try {
+      if (el.querySelector('[role="gridcell"],[aria-label*="მზადაა"],[aria-label*="გადატანა"]')) return true;
+    } catch { }
+  }
   return false;
 }
 

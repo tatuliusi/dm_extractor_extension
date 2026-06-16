@@ -220,7 +220,7 @@ const dom1 = new JSDOM(`<!DOCTYPE html><html><body>
 
 const doc1 = dom1.window.document;
 
-// Inline isDangerousActionEl from content.js
+// Inline isDangerousActionEl from content.js (keep in sync with content.js)
 function isDangerousActionEl(el) {
   const label = (el.getAttribute('aria-label') || '').toLowerCase();
   const title = (el.getAttribute('title') || '').toLowerCase();
@@ -234,6 +234,12 @@ function isDangerousActionEl(el) {
     if (el.closest('[role="grid"],[role="gridcell"]')) return true;
     if (el.closest('._4a51')) return true;
   } catch { }
+  if (el.tagName === 'A') {
+    if (el.getAttribute('role') === 'row') return true;
+    try {
+      if (el.querySelector('[role="gridcell"],[aria-label*="მზადაა"],[aria-label*="გადატანა"]')) return true;
+    } catch { }
+  }
   return false;
 }
 
@@ -267,6 +273,42 @@ assert(isDangerousActionEl(textSpan) === false, 'Normal text span is NOT blocked
 // The row wrapper itself should NOT be blocked
 const rowWrapper = doc1.querySelector('.row-wrapper');
 assert(isDangerousActionEl(rowWrapper) === false, 'Row wrapper div is NOT blocked');
+
+// ─── Descendant-check fallback: same structure but WITHOUT role="grid" ────────
+// This simulates a MBS deploy where the grid role/class changes but the
+// gridcell aria-label stays — the descendant querySelector must catch it.
+console.log('\n=== Bug 1 (fallback): descendant check when role="grid" is absent ===');
+
+const dom1b = new JSDOM(`<!DOCTYPE html><html><body>
+  <div class="row-wrapper-b">
+    <div class="text-area-b"><span>Safe text</span></div>
+    <div class="action-container-no-role">
+      <a href="#">
+        <div role="gridcell" aria-label="გადატანა საქაღალდეში „მზადაა""><div></div></div>
+      </a>
+    </div>
+  </div>
+</body></html>`);
+
+const doc1b = dom1b.window.document;
+
+// Anchor has no aria-label AND its parent has no role="grid" — only descendant check saves us
+const noRoleAnchor = doc1b.querySelector('.action-container-no-role a');
+assert(noRoleAnchor !== null, 'No-role action anchor found in DOM');
+assert(isDangerousActionEl(noRoleAnchor) === true,
+  'Anchor blocked via descendant check even when parent has no role="grid"');
+
+// The action container div itself: a div with dangerous children should NOT
+// be blocked by the descendant check (only <a> elements get that check),
+// because the full row wrapper div is also a "container of gridcells" and
+// must remain clickable for navigation.
+const noRoleContainer = doc1b.querySelector('.action-container-no-role');
+assert(isDangerousActionEl(noRoleContainer) === false,
+  'Action container div is NOT blocked (div-level descendant check intentionally absent to avoid blocking the row wrapper)');
+
+// Safe span is still not blocked
+const safeSpanB = doc1b.querySelector('.text-area-b span');
+assert(isDangerousActionEl(safeSpanB) === false, 'Safe span still NOT blocked');
 
 // ─── Bug 2 Tests: extractRowName and findCustomerName ────────────────────────
 
