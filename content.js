@@ -1010,9 +1010,13 @@ async function navigateToConversation(item) {
 
   // ── Structure-based (WhatsApp / WEC) ─────────────────────────────────────
 
-  // 1. Native click on inner <a> (trusted, follows href)
-  const innerAnchor = item.row.querySelector('a');
-  if (innerAnchor) {
+  // 1. Native click on inner navigation anchor (trusted, follows href).
+  // Must be a[href*="selected_item_id"] — the Done/Follow-up buttons are also
+  // <a> elements inside WEC rows and their React onClick fires on any .click(),
+  // so a bare querySelector('a') would trigger Done. WEC navigation anchors
+  // carry selected_item_id; action-button anchors end in '#' and don't.
+  const innerAnchor = item.row.querySelector('a[href*="selected_item_id"]');
+  if (innerAnchor && !isDangerousActionEl(innerAnchor)) {
     innerAnchor.click();
     const id = await waitForAnyIdChange(prevId, 2500);
     if (id) { item.realId = id; return true; }
