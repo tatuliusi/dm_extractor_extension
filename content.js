@@ -1017,6 +1017,13 @@ async function navigateToConversation(item) {
   // carry selected_item_id; action-button anchors end in '#' and don't.
   const innerAnchor = item.row.querySelector('a[href*="selected_item_id"]');
   if (innerAnchor && !isDangerousActionEl(innerAnchor)) {
+    // If the anchor already points to the current conversation, no click needed.
+    let innerAnchorId;
+    try { innerAnchorId = new URL(innerAnchor.href).searchParams.get('selected_item_id'); } catch {}
+    if (innerAnchorId && innerAnchorId === prevId) {
+      item.realId = prevId;
+      return true;
+    }
     innerAnchor.click();
     const id = await waitForAnyIdChange(prevId, 2500);
     if (id) { item.realId = id; return true; }
@@ -1024,7 +1031,12 @@ async function navigateToConversation(item) {
 
   // 2. Find conversation ID in data attributes → pushState navigation
   const dataId = getConvIdFromRow(item.row);
-  if (dataId && dataId !== prevId) {
+  if (dataId) {
+    if (dataId === prevId) {
+      // Data attribute confirms we're already at this conversation.
+      item.realId = dataId;
+      return true;
+    }
     const url = new URL(window.location.href);
     url.searchParams.set('selected_item_id', dataId);
     history.pushState({}, '', url.toString());
@@ -1078,6 +1090,16 @@ async function navigateToConversation(item) {
     pointerClick(el);
     const id = await waitForAnyIdChange(prevId, 800);
     if (id) { item.realId = id; return true; }
+  }
+
+  // Final fallback: URL never changed — we're still at prevId.
+  // The most common cause is that the first sidebar item is already the
+  // active/open conversation. Treat as success: the thread is loaded and ready
+  // to extract. If prevId was already downloaded, _seenIds catches the duplicate.
+  const finalId = getSelectedItemId();
+  if (finalId && finalId === prevId) {
+    item.realId = finalId;
+    return true;
   }
 
   return false;
