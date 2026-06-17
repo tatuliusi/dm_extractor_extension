@@ -118,9 +118,14 @@ function parseDateLabel(label) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  if (lower === 'today' || raw === 'დღეს') return new Date(today);
+  // Strip trailing ", HH:MM" time component before any Georgian relative-date
+  // comparison. WEC labels today/yesterday/weekdays as "დღეს, 14:30" or
+  // "შაბ, 19:42" — the time suffix must be removed before table lookups.
+  const stripped = raw.replace(/[,\.]\s*\d{1,2}:\d{2}.*$/, '').trim();
 
-  if (lower === 'yesterday' || raw === 'გუშინ') {
+  if (lower === 'today'     || stripped === 'დღეს') return new Date(today);
+
+  if (lower === 'yesterday' || stripped === 'გუშინ') {
     const d = new Date(today);
     d.setDate(d.getDate() - 1);
     return d;
@@ -135,10 +140,8 @@ function parseDateLabel(label) {
     return d;
   }
 
-  // Georgian weekday: "შაბ, 19:42" | "ოთხ." | "ოთხშაბათი"
-  // Strip optional trailing ", HH:MM" time portion before lookup.
-  const geoDay = raw.replace(/[,\.]\s*\d{1,2}:\d{2}.*$/, '').trim();
-  const geoWeekIdx = GEORGIAN_WEEKDAYS[geoDay];
+  // Georgian weekday: "შაბ, 19:42" | "ოთხ." | "ოთხშაბათი" — use already-stripped form.
+  const geoWeekIdx = GEORGIAN_WEEKDAYS[stripped];
   if (geoWeekIdx !== undefined) {
     const d = new Date(today);
     const diff = (today.getDay() - geoWeekIdx + 7) % 7 || 7;
@@ -172,6 +175,22 @@ function parseDateLabel(label) {
     const monthIdx = GEORGIAN_MONTHS[monthName] ?? MONTH_NAMES[monthName.toLowerCase()];
     if (monthIdx !== undefined) {
       return new Date(parseInt(geoMatch[3], 10), monthIdx, parseInt(geoMatch[1], 10), 0, 0, 0, 0);
+    }
+  }
+
+  // "8 ივნისი" — Georgian month name without year.
+  // MBS omits the year for same-calendar-year dates (e.g. conversations from
+  // 8–30+ days ago in the same year). Without this branch they return null and
+  // get conservatively included, breaking date-range filtering.
+  const geoNoYear = raw.match(/^(\d{1,2})\s+([^\d\s,.][^\d,.]*?)\.?\s*$/);
+  if (geoNoYear) {
+    const monthName = geoNoYear[2].trim();
+    const monthIdx = GEORGIAN_MONTHS[monthName] ?? MONTH_NAMES[monthName.toLowerCase()];
+    if (monthIdx !== undefined) {
+      const day = parseInt(geoNoYear[1], 10);
+      const d = new Date(today.getFullYear(), monthIdx, day, 0, 0, 0, 0);
+      if (d > today) d.setFullYear(today.getFullYear() - 1);
+      return d;
     }
   }
 
