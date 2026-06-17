@@ -563,7 +563,7 @@ function download(data) {
 const DELAY_BETWEEN_CONVS = 2500; // ms between conversations
 const SCROLL_WAIT         = 1500; // ms to wait after scrolling for new items
 const THREAD_LOAD_TIMEOUT = 8000; // ms to wait for thread DOM
-const MAX_EMPTY_SCROLLS   = 4;    // stop scrolling after N non-productive scrolls
+const MAX_EMPTY_SCROLLS   = 6;    // stop scrolling after N non-productive scrolls
 
 /**
  * Start the batch crawler.
@@ -628,6 +628,7 @@ async function runCrawl(fromDate, toDate) {
   let processed = 0;
   let emptyScrolls = 0;
   let consecutiveTooOld = 0;
+  let seenTooNew = false; // true once a conversation newer than toDate is encountered
   const MAX_CONSECUTIVE_TOO_OLD = 3;
 
   while (!_stopSignal) {
@@ -724,11 +725,18 @@ async function runCrawl(fromDate, toDate) {
       emitProgress({ inbox: detectInboxType() });
       if (tooOld) {
         consecutiveTooOld++;
-        if (consecutiveTooOld >= MAX_CONSECUTIVE_TOO_OLD) {
+        // Only stop early once we've confirmed we're past the in-range window:
+        // either we already downloaded some in-range conversations, or we've
+        // seen too-new conversations (meaning we passed through the target
+        // date band without finding anything). Without this guard a few pinned
+        // or unread-first conversations from before fromDate at the top of the
+        // list would fire the stop before the target range is ever reached.
+        if (consecutiveTooOld >= MAX_CONSECUTIVE_TOO_OLD && (seenTooNew || _stats.downloaded > 0)) {
           log('info', `Stopped early: ${MAX_CONSECUTIVE_TOO_OLD} consecutive conversations older than start date.`);
           break;
         }
       } else {
+        seenTooNew = true;
         consecutiveTooOld = 0;
       }
       await sleep(DELAY_BETWEEN_CONVS);
