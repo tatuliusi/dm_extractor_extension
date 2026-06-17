@@ -56,8 +56,10 @@ function parseDateLabel(label) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  if (lower === 'today' || raw === 'დღეს') return new Date(today);
-  if (lower === 'yesterday' || raw === 'გუშინ') {
+  const stripped = raw.replace(/[,\.]\s*\d{1,2}:\d{2}.*$/, '').trim();
+
+  if (lower === 'today'     || stripped === 'დღეს') return new Date(today);
+  if (lower === 'yesterday' || stripped === 'გუშინ') {
     const d = new Date(today); d.setDate(d.getDate() - 1); return d;
   }
 
@@ -69,8 +71,7 @@ function parseDateLabel(label) {
     return d;
   }
 
-  const geoDay = raw.replace(/[,\.]\s*\d{1,2}:\d{2}.*$/, '').trim();
-  const geoWeekIdx = GEORGIAN_WEEKDAYS[geoDay];
+  const geoWeekIdx = GEORGIAN_WEEKDAYS[stripped];
   if (geoWeekIdx !== undefined) {
     const d = new Date(today);
     const diff = (today.getDay() - geoWeekIdx + 7) % 7 || 7;
@@ -97,6 +98,18 @@ function parseDateLabel(label) {
     const monthIdx = GEORGIAN_MONTHS[monthName] ?? MONTH_NAMES[monthName.toLowerCase()];
     if (monthIdx !== undefined) {
       return new Date(parseInt(geoMatch[3], 10), monthIdx, parseInt(geoMatch[1], 10), 0, 0, 0, 0);
+    }
+  }
+
+  const geoNoYear = raw.match(/^(\d{1,2})\s+([^\d\s,.][^\d,.]*?)\.?\s*$/);
+  if (geoNoYear) {
+    const monthName = geoNoYear[2].trim();
+    const monthIdx = GEORGIAN_MONTHS[monthName] ?? MONTH_NAMES[monthName.toLowerCase()];
+    if (monthIdx !== undefined) {
+      const day = parseInt(geoNoYear[1], 10);
+      const d = new Date(today.getFullYear(), monthIdx, day, 0, 0, 0, 0);
+      if (d > today) d.setFullYear(today.getFullYear() - 1);
+      return d;
     }
   }
 
@@ -151,19 +164,36 @@ const monResult = parseDateLabel('ორშაბათი');
 assert(monResult !== null, '"ორშაბათი" (full Monday name) parses to a Date');
 assert(monResult instanceof Date && monResult.getDay() === 1, '"ორშაბათი" parses as Monday');
 
-// Georgian "Today"
+// Georgian "Today" — bare form
 const todayResult = parseDateLabel('დღეს');
 const todayExpected = new Date(); todayExpected.setHours(0,0,0,0);
 assert(todayResult !== null, '"დღეს" (Today) parses to a Date');
 assert(todayResult instanceof Date && todayResult.getTime() === todayExpected.getTime(), '"დღეს" is today');
 
-// Georgian "Yesterday"
+// Georgian "Today" with WEC time suffix — was returning null before the fix
+const todayTimeResult = parseDateLabel('დღეს, 14:30');
+assert(todayTimeResult !== null, '"დღეს, 14:30" (Today+time) parses to a Date');
+assert(todayTimeResult instanceof Date && todayTimeResult.getTime() === todayExpected.getTime(), '"დღეს, 14:30" is today');
+
+// Georgian "Yesterday" — bare form
 const yesterdayResult = parseDateLabel('გუშინ');
 const yesterdayExpected = new Date(); yesterdayExpected.setHours(0,0,0,0); yesterdayExpected.setDate(yesterdayExpected.getDate() - 1);
 assert(yesterdayResult !== null, '"გუშინ" (Yesterday) parses to a Date');
 assert(yesterdayResult instanceof Date && yesterdayResult.getTime() === yesterdayExpected.getTime(), '"გუშინ" is yesterday');
 
-// Existing Georgian month format still works
+// Georgian "Yesterday" with WEC time suffix — was returning null before the fix
+const yesterdayTimeResult = parseDateLabel('გუშინ, 09:00');
+assert(yesterdayTimeResult !== null, '"გუშინ, 09:00" (Yesterday+time) parses to a Date');
+assert(yesterdayTimeResult instanceof Date && yesterdayTimeResult.getTime() === yesterdayExpected.getTime(), '"გუშინ, 09:00" is yesterday');
+
+// Georgian month without year: "8 ივნისი" — same-year date MBS omits year for
+// (was returning null before the fix, causing conservative include / wrong filtering)
+const geoNoYearResult = parseDateLabel('8 ივნისი');
+assert(geoNoYearResult !== null, '"8 ივნისი" (Georgian month, no year) parses to a Date');
+assert(geoNoYearResult instanceof Date && geoNoYearResult.getMonth() === 5 && geoNoYearResult.getDate() === 8,
+  '"8 ივნისი" is June 8');
+
+// Georgian month with year still works
 const geoMonthResult = parseDateLabel('13 მაისი. 2026');
 assert(geoMonthResult !== null, '"13 მაისი. 2026" still parses correctly');
 assert(geoMonthResult instanceof Date && geoMonthResult.getFullYear() === 2026 && geoMonthResult.getMonth() === 4 && geoMonthResult.getDate() === 13, '"13 მაისი. 2026" is 2026-05-13');
