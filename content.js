@@ -695,11 +695,6 @@ async function runCrawl(fromDate, toDate) {
 
     try {
       await waitForElement('[aria-label*="Message list container" i]', THREAD_LOAD_TIMEOUT);
-      // Wait for at least one message bubble to render (prevents extracting a blank thread)
-      await waitForElement(
-        '[data-message-id],[data-mid],[data-msgid],[data-focusable-id],[data-item-id]',
-        3000
-      ).catch(() => null);
     } catch {
       log('err', `Timed out loading thread: ${item.name || item.id}`);
       _stats.errors++;
@@ -707,7 +702,12 @@ async function runCrawl(fromDate, toDate) {
       continue;
     }
 
-    await sleep(800);
+    // Wait until the message count stops growing before extracting.
+    // MBS loads bubbles progressively; a fixed sleep grabs only the first batch.
+    await waitForCountStable(
+      '[data-message-id],[data-mid],[data-msgid],[data-focusable-id],[data-item-id]',
+      { timeout: 6000, interval: 250, stableRounds: 3 }
+    );
 
     let data;
     try { data = extract(); }

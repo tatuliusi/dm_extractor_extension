@@ -66,6 +66,33 @@ function waitForElements(selector, timeout = 5000, root = document) {
   });
 }
 
+/**
+ * Wait until the number of elements matching `selector` stops growing.
+ * Polls every `interval` ms; resolves once the count has been stable for
+ * `stableRounds` consecutive polls, or after `timeout` ms — whichever comes first.
+ * Always waits for at least one match before starting the stability countdown.
+ */
+async function waitForCountStable(selector, {
+  timeout      = 5000,
+  interval     = 250,
+  stableRounds = 3,
+  root         = document,
+} = {}) {
+  const deadline = Date.now() + timeout;
+  let lastCount  = -1;
+  let stable     = 0;
+  while (Date.now() < deadline) {
+    const count = root.querySelectorAll(selector).length;
+    if (count > 0 && count === lastCount) {
+      if (++stable >= stableRounds) return;
+    } else {
+      stable    = 0;
+      lastCount = count;
+    }
+    await sleep(interval);
+  }
+}
+
 // ─── Date parsing ─────────────────────────────────────────────────────────────
 
 const DAY_NAMES = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
