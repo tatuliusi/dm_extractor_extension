@@ -410,9 +410,12 @@ function nearestDirection(node, root) {
  */
 function bubbleText(bubble) {
   const clone = bubble.cloneNode(true);
-  // Remove hidden / accessibility-only nodes
+  // Remove accessibility-only and explicitly hidden nodes.
+  // Note: [class*="hidden"] is intentionally omitted — it is too broad and
+  // matches Meta's obfuscated class names that contain the word "hidden" even
+  // on fully visible message text elements.
   clone.querySelectorAll(
-    '[aria-hidden="true"], [class*="hidden"], .sr-only, [style*="display:none"], [style*="display: none"]'
+    '[aria-hidden="true"], .sr-only, [style*="display:none"], [style*="display: none"]'
   ).forEach(n => n.remove());
   return clone.textContent.trim();
 }
@@ -463,12 +466,23 @@ function extract() {
     }
 
     // ── Message bubble ──────────────────────────────────────────────────
-    const msgId = node.getAttribute('data-message-id') ||
-                  node.getAttribute('data-mid') ||
-                  node.getAttribute('data-msgid') ||
-                  node.getAttribute('data-focusable-id') ||
-                  node.getAttribute('data-item-id');
+    const primaryId = node.getAttribute('data-message-id') ||
+                      node.getAttribute('data-mid') ||
+                      node.getAttribute('data-msgid');
+    const groupId   = node.getAttribute('data-focusable-id') ||
+                      node.getAttribute('data-item-id');
+    const msgId = primaryId || groupId;
     if (!msgId) continue;
+
+    // If this element only has a group-level ID (data-focusable-id / data-item-id)
+    // and contains children with finer-grained message IDs, skip it so the
+    // individual children are captured separately instead of being merged into one entry.
+    if (!primaryId && groupId) {
+      const hasMessageChildren = node.querySelector(
+        '[data-message-id],[data-mid],[data-msgid]'
+      );
+      if (hasMessageChildren) continue;
+    }
 
     // Avoid duplicates (walker visits descendants too)
     if (seenMsgIds.has(msgId)) continue;
