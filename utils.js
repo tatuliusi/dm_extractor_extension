@@ -264,6 +264,29 @@ function getSelectedItemId(url) {
 }
 
 /**
+ * Build the download subfolder name from the current page URL.
+ * Format: "{platform}+{business_id}"  e.g. "instagram_direct+527561502714866"
+ *
+ * Platform  — the path segment immediately after /inbox/
+ * Business ID — the business_id query parameter
+ *
+ * Falls back gracefully: only platform, only business_id, or "dm_extractor".
+ */
+function getContextFolder() {
+  try {
+    const url        = new URL(window.location.href);
+    const pathMatch  = url.pathname.match(/\/inbox\/([^/?#]+)/i);
+    const platform   = pathMatch ? pathMatch[1] : null;
+    const businessId = url.searchParams.get('business_id');
+
+    if (platform && businessId) return platform + '+' + businessId;
+    if (platform)               return platform;
+    if (businessId)             return 'dm_extractor+' + businessId;
+  } catch { /* ignore malformed URL */ }
+  return 'dm_extractor';
+}
+
+/**
  * Detect which inbox type is active based on URL path segment or page heading.
  * Returns one of: "WhatsApp" | "Messenger" | "Instagram" | "Unknown"
  *
