@@ -648,7 +648,7 @@ async function runCrawl(fromDate, toDate) {
   let emptyScrolls = 0;
   let consecutiveTooOld = 0;
   let seenTooNew = false; // true once a conversation newer than toDate is encountered
-  const MAX_CONSECUTIVE_TOO_OLD = 3;
+  const MAX_CONSECUTIVE_TOO_OLD = 6;
 
   while (!_stopSignal) {
     await waitIfPaused();
@@ -1346,9 +1346,14 @@ function scrollListDown(container) {
 }
 
 /**
- * Scroll the open thread to the top repeatedly until the message count stops growing.
- * MBS lazy-loads older messages as the thread is scrolled up; this drives that process
- * to completion so extract() sees the full conversation history.
+ * Scroll the open thread to the top repeatedly until the message count stops growing,
+ * then scroll back to the bottom.
+ *
+ * Scrolling up triggers MBS to lazy-load older messages. Scrolling back down afterwards
+ * is critical: if MBS uses a sliding DOM window (virtual scroll), the upward scrolling
+ * evicts the most-recent messages from the DOM. Without the downward scroll, extract()
+ * would see only old messages and filterByDateRange would incorrectly mark the
+ * conversation as tooOld, triggering an early stop.
  */
 async function scrollThreadToLoadAll() {
   const region = findThreadRegion();
@@ -1368,6 +1373,13 @@ async function scrollThreadToLoadAll() {
     if (count === prev) break; // nothing new loaded → reached the beginning
     prev = count;
   }
+
+  // Scroll back to the bottom so the most-recent messages are in the DOM when
+  // extract() runs. Without this, virtual-scroll conversations would have their
+  // newest messages evicted and filterByDateRange would see stale old dates.
+  region.scrollTop = region.scrollHeight;
+  region.dispatchEvent(new Event('scroll', { bubbles: true }));
+  await sleep(1000);
 }
 
 // ─── Date range filtering ─────────────────────────────────────────────────
