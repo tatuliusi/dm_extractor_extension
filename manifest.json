@@ -3,6 +3,10 @@
   "name": "DM Extractor — Meta Business Suite Batch Downloader",
   "version": "1.0.0",
   "description": "Batch-downloads all conversations from Meta Business Suite inboxes (Messenger, Instagram, WhatsApp) with date-range filtering.",
+  "permissions": ["downloads"],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": [
