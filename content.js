@@ -648,11 +648,25 @@ async function runCrawl(fromDate, toDate) {
   let emptyScrolls = 0;
   let consecutiveTooOld = 0;
   let seenTooNew = false; // true once a conversation newer than toDate is encountered
-  const MAX_CONSECUTIVE_TOO_OLD = 6;
+  const MAX_CONSECUTIVE_TOO_OLD = 4;
 
   while (!_stopSignal) {
     await waitIfPaused();
     if (_stopSignal) break;
+
+    // Re-discover the sidebar container if MBS replaced the DOM after navigation.
+    // If listContainer is detached, scrolling it has no effect and
+    // getConversationItems queries a dead tree — causing a false "end of list".
+    if (!document.body.contains(listContainer)) {
+      const fresh = findConversationListContainer();
+      if (fresh) {
+        listContainer = fresh;
+        log('info', 'Sidebar container refreshed after DOM change.');
+      } else {
+        log('err', 'Cannot find sidebar container after DOM change — stopping.');
+        break;
+      }
+    }
 
     // Re-discover visible items every iteration to get a fresh DOM reference.
     // Virtual scroll recycles DOM nodes; cached references go stale and cause
@@ -679,8 +693,9 @@ async function runCrawl(fromDate, toDate) {
     // Pre-filter from the sidebar row timestamp (avoids opening out-of-range conversations).
     // Row timestamps are more reliably parsed than in-thread date dividers, which rely
     // on obfuscated CSS class names that Meta changes between deploys.
-    const rowDate = extractRowDate(item.row);
-    if (rowDate && !dateInRange(rowDate, fromDate, toDate)) {
+    const rowDate   = extractRowDate(item.row);
+    const rowInRange = rowDate !== null && dateInRange(rowDate, fromDate, toDate);
+    if (rowDate && !rowInRange) {
       const tooOld = rowDate < fromDate;
       log('skip', `Out of range (${rowDate.toLocaleDateString()}): ${item.name || item.id}`);
       _stats.skipped++;
@@ -770,7 +785,12 @@ async function runCrawl(fromDate, toDate) {
       log('skip', `No messages in range: ${item.name || item.id}`);
       _stats.skipped++;
       emitProgress({ inbox: detectInboxType() });
-      if (tooOld) {
+      if (rowInRange) {
+        // Pre-filter confirmed this conversation is in range; filterByDateRange returning
+        // empty is a scroll artifact (virtual scroll may have evicted newest messages).
+        // Do NOT increment consecutiveTooOld — we're still inside the target date band.
+        consecutiveTooOld = 0;
+      } else if (tooOld) {
         consecutiveTooOld++;
         // Only stop early once we've confirmed we're past the in-range window:
         // either we already downloaded some in-range conversations, or we've

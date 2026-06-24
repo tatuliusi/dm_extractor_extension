@@ -114,7 +114,7 @@ const GEORGIAN_MONTHS = {
 // WEC date dividers use short forms like "შაბ, 19:42" or "ოთხ"
 const GEORGIAN_WEEKDAYS = {
   'ორშ':1,'ორშ.':1,'ორშაბათი':1,     // Monday
-  'სამ':2,'სამ.':2,'სამშაბათი':2,     // Tuesday
+  'სამ':2,'სამ.':2,'სამშ':2,'სამშ.':2,'სამშაბათი':2,     // Tuesday
   'ოთხ':3,'ოთხ.':3,'ოთხშაბათი':3,    // Wednesday
   'ხუთ':4,'ხუთ.':4,'ხუთშაბათი':4,    // Thursday
   'პარ':5,'პარ.':5,'პარასკევი':5,     // Friday
