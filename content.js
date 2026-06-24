@@ -676,6 +676,29 @@ async function runCrawl(fromDate, toDate) {
     _stats.convIndex = processed;
     _stats.convTotal = _seenIds.size + items.filter(i => !_seenIds.has(i.id)).length;
 
+    // Pre-filter from the sidebar row timestamp (avoids opening out-of-range conversations).
+    // Row timestamps are more reliably parsed than in-thread date dividers, which rely
+    // on obfuscated CSS class names that Meta changes between deploys.
+    const rowDate = extractRowDate(item.row);
+    if (rowDate && !dateInRange(rowDate, fromDate, toDate)) {
+      const tooOld = rowDate < fromDate;
+      log('skip', `Out of range (${rowDate.toLocaleDateString()}): ${item.name || item.id}`);
+      _stats.skipped++;
+      if (tooOld) {
+        consecutiveTooOld++;
+        if (consecutiveTooOld >= MAX_CONSECUTIVE_TOO_OLD && (seenTooNew || _stats.downloaded > 0)) {
+          log('info', `Stopped early: ${MAX_CONSECUTIVE_TOO_OLD} consecutive conversations older than start date.`);
+          break;
+        }
+      } else {
+        seenTooNew = true;
+        consecutiveTooOld = 0;
+      }
+      emitProgress({ inbox: detectInboxType() });
+      await sleep(300);
+      continue;
+    }
+
     log('info', `Opening: ${item.name || item.id}`);
     emitProgress({ inbox: detectInboxType(), convName: item.name || item.id });
 
@@ -996,6 +1019,29 @@ function extractRowName(el) {
   const text = cleanText(el);
   const latinPrefix = text.match(/^([A-Za-z0-9 +\-_.@]{1,60})(?=[ა-ჿ]|$)/);
   if (latinPrefix && latinPrefix[1].trim()) return latinPrefix[1].trim();
+  return null;
+}
+
+/**
+ * Extract the last-message timestamp from a sidebar conversation row.
+ * MBS shows "14:30", "Yesterday", "June 18", etc. in the right portion of each row.
+ * Returns a Date (midnight) or null if unreadable.
+ */
+function extractRowDate(row) {
+  const rect = row.getBoundingClientRect();
+  if (!rect.width) return null;
+  const rightBoundary = rect.left + rect.width * 0.55; // right 45% of the row
+
+  for (const el of row.querySelectorAll('span,div')) {
+    if (el.children.length > 0) continue; // leaf nodes only
+    const text = cleanText(el);
+    if (!text || text.length > 20) continue;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) continue;
+    if (r.left < rightBoundary) continue; // must be in the right portion
+    const d = parseDateLabel(text);
+    if (d) return d;
+  }
   return null;
 }
 

@@ -145,6 +145,10 @@ function parseDateLabel(label) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
+  // Time-only string like "14:30" or "2:30 PM" — MBS sidebar rows show only a
+  // clock time when the last message was today. Treat as today's date.
+  if (/^\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?$/.test(raw)) return new Date(today);
+
   // Strip trailing ", HH:MM" time component before any Georgian relative-date
   // comparison. WEC labels today/yesterday/weekdays as "დღეს, 14:30" or
   // "შაბ, 19:42" — the time suffix must be removed before table lookups.
