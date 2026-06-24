@@ -579,7 +579,7 @@ function download(data) {
 // CRAWLER STATE MACHINE
 // ═══════════════════════════════════════════════════════════════════════════
 
-const DELAY_BETWEEN_CONVS = 2500; // ms between conversations
+const DELAY_BETWEEN_CONVS = 1500; // ms between conversations
 const SCROLL_WAIT         = 1500; // ms to wait after scrolling for new items
 const THREAD_LOAD_TIMEOUT = 8000; // ms to wait for thread DOM
 const MAX_EMPTY_SCROLLS   = 6;    // stop scrolling after N non-productive scrolls
@@ -749,7 +749,7 @@ async function runCrawl(fromDate, toDate) {
     // MBS loads bubbles progressively; a fixed sleep grabs only the first batch.
     await waitForCountStable(
       '[data-message-id],[data-mid],[data-msgid],[data-focusable-id],[data-item-id]',
-      { timeout: 6000, interval: 250, stableRounds: 3 }
+      { timeout: 3000, interval: 200, stableRounds: 2 }
     );
 
     // Scroll to the top of the thread to force MBS to lazy-load the full conversation
@@ -1379,8 +1379,8 @@ async function scrollThreadToLoadAll() {
   const region = findThreadRegion();
   if (!region) return;
 
-  const BATCH_WAIT = 1500; // ms to allow one batch of older messages to render
-  const MAX_BATCHES = 50;  // safety cap: 50 × 1.5 s = 75 s max
+  const BATCH_WAIT = 700;  // ms to allow one batch of older messages to render
+  const MAX_BATCHES = 25;  // safety cap: 25 × 0.7 s = 17.5 s max
   const SEL = '[data-message-id],[data-mid],[data-msgid],[data-focusable-id],[data-item-id]';
 
   let prev = -1;
@@ -1399,7 +1399,7 @@ async function scrollThreadToLoadAll() {
   // newest messages evicted and filterByDateRange would see stale old dates.
   region.scrollTop = region.scrollHeight;
   region.dispatchEvent(new Event('scroll', { bubbles: true }));
-  await sleep(1000);
+  await sleep(500);
 }
 
 // ─── Date range filtering ─────────────────────────────────────────────────
