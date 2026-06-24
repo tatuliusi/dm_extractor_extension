@@ -549,8 +549,13 @@ function extract() {
 }
 
 /**
- * Trigger a JSON file download.
+ * Save data as a JSON file inside a per-context subfolder.
+ * Folder: "{platform}+{business_id}" derived from the current page URL.
  * Filename: dm_extractor_<name>_<timestamp>.json
+ *
+ * Uses chrome.downloads (via background.js) so that the filename path creates
+ * a real subfolder under Downloads. Multiple tabs each read their own URL,
+ * so they naturally produce separate folders and their files never mix.
  */
 function download(data) {
   const name      = (data.customer_name || data.thread || 'unknown')
@@ -558,16 +563,16 @@ function download(data) {
     .slice(0, 60);
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const filename  = `dm_extractor_${name}_${timestamp}.json`;
+  const folder    = getContextFolder();
+  const jsonStr   = JSON.stringify(data, null, 2);
 
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href     = url;
-  a.download = filename;
-  a.style.display = 'none';
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 5000);
+  chrome.runtime.sendMessage({ action: 'download', folder, filename, jsonStr }, response => {
+    if (chrome.runtime.lastError) {
+      console.error('[DM Extractor] sendMessage error:', chrome.runtime.lastError.message);
+    } else if (response && !response.ok) {
+      console.error('[DM Extractor] Download failed in background:', response.error);
+    }
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
