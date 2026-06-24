@@ -714,6 +714,11 @@ async function runCrawl(fromDate, toDate) {
       { timeout: 6000, interval: 250, stableRounds: 3 }
     );
 
+    // Scroll to the top of the thread to force MBS to lazy-load the full conversation
+    // history. MBS only renders the most recent messages on open; earlier messages are
+    // added to the DOM only as the thread is scrolled upward.
+    await scrollThreadToLoadAll();
+
     let data;
     try { data = extract(); }
     catch (err) {
@@ -1292,6 +1297,31 @@ function waitForSpecificId(targetId, timeout) {
 /** Scroll the sidebar container down to trigger virtual-scroll loading. */
 function scrollListDown(container) {
   container.scrollTop += container.clientHeight || 400;
+}
+
+/**
+ * Scroll the open thread to the top repeatedly until the message count stops growing.
+ * MBS lazy-loads older messages as the thread is scrolled up; this drives that process
+ * to completion so extract() sees the full conversation history.
+ */
+async function scrollThreadToLoadAll() {
+  const region = findThreadRegion();
+  if (!region) return;
+
+  const BATCH_WAIT = 1500; // ms to allow one batch of older messages to render
+  const MAX_BATCHES = 50;  // safety cap: 50 × 1.5 s = 75 s max
+  const SEL = '[data-message-id],[data-mid],[data-msgid],[data-focusable-id],[data-item-id]';
+
+  let prev = -1;
+  for (let i = 0; i < MAX_BATCHES; i++) {
+    if (_stopSignal) break;
+    region.scrollTop = 0;
+    region.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await sleep(BATCH_WAIT);
+    const count = region.querySelectorAll(SEL).length;
+    if (count === prev) break; // nothing new loaded → reached the beginning
+    prev = count;
+  }
 }
 
 // ─── Date range filtering ─────────────────────────────────────────────────
