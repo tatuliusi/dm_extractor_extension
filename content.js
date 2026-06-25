@@ -566,12 +566,19 @@ function download(data) {
   const folder    = getContextFolder();
   const jsonStr   = JSON.stringify(data, null, 2);
 
-  chrome.runtime.sendMessage({ action: 'download', folder, filename, jsonStr }, response => {
-    if (chrome.runtime.lastError) {
-      console.error('[DM Extractor] sendMessage error:', chrome.runtime.lastError.message);
-    } else if (response && !response.ok) {
-      console.error('[DM Extractor] Download failed in background:', response.error);
-    }
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ action: 'download', folder, filename, jsonStr }, response => {
+      if (chrome.runtime.lastError) {
+        const msg = chrome.runtime.lastError.message;
+        log('err', `Download error (messaging): ${msg}`);
+        reject(new Error(msg));
+      } else if (response && !response.ok) {
+        log('err', `Download error (background): ${response.error}`);
+        reject(new Error(response.error));
+      } else {
+        resolve(response);
+      }
+    });
   });
 }
 
@@ -601,6 +608,7 @@ async function startCrawler({ from, to }) {
 
   log('info', `Starting batch. Range: ${from} → ${to}`);
   log('info', `Inbox: ${detectInboxType()}`);
+  log('info', `Saving to: Downloads/${getContextFolder()}/`);
 
   emitProgress({ inbox: detectInboxType() });
 
@@ -779,7 +787,7 @@ async function runCrawl(fromDate, toDate) {
       data.thread        = item.name;
     }
 
-    const { filtered, filteredMessages, tooOld } = filterByDateRange(data.messages, fromDate, toDate);
+    const { filtered, filteredMessages, tooOld, hasEvidence } = filterByDateRange(data.messages, fromDate, toDate);
 
     if (filteredMessages.length === 0) {
       log('skip', `No messages in range: ${item.name || item.id}`);
@@ -810,7 +818,11 @@ async function runCrawl(fromDate, toDate) {
       continue;
     }
 
-    consecutiveTooOld = 0;
+    // Only reset the early-stop counter when we have real date evidence that
+    // this conversation is in range. Conservative includes (hasEvidence=false)
+    // must not reset the counter — they would mask a run of undatable old
+    // conversations and prevent early stopping.
+    if (rowInRange || hasEvidence) consecutiveTooOld = 0;
 
     const output = {
       ...data,
@@ -822,7 +834,7 @@ async function runCrawl(fromDate, toDate) {
 
     let downloaded = false;
     for (let attempt = 0; attempt < 2; attempt++) {
-      try { download(output); downloaded = true; break; }
+      try { await download(output); downloaded = true; break; }
       catch (err) { if (attempt === 0) { log('err', 'Download failed, retrying…'); await sleep(500); } }
     }
 
@@ -1417,7 +1429,7 @@ async function scrollThreadToLoadAll() {
  * @returns {{ filtered: boolean, filteredMessages: Array }}
  */
 function filterByDateRange(messages, fromDate, toDate) {
-  if (!messages.length) return { filtered: false, filteredMessages: [], tooOld: false };
+  if (!messages.length) return { filtered: false, filteredMessages: [], tooOld: false, hasEvidence: false };
 
   // Find the last message that carries a parseable date label
   let lastDate = null;
@@ -1426,15 +1438,20 @@ function filterByDateRange(messages, fromDate, toDate) {
     if (d) { lastDate = d; break; }
   }
 
-  // If no date is parseable, include conservatively (can't tell → don't skip)
-  if (!lastDate || dateInRange(lastDate, fromDate, toDate)) {
-    return { filtered: false, filteredMessages: messages, tooOld: false };
+  // If no date is parseable, include conservatively (can't tell → don't skip).
+  // hasEvidence=false so the caller won't reset consecutiveTooOld on a ghost include.
+  if (!lastDate) {
+    return { filtered: false, filteredMessages: messages, tooOld: false, hasEvidence: false };
+  }
+
+  if (dateInRange(lastDate, fromDate, toDate)) {
+    return { filtered: false, filteredMessages: messages, tooOld: false, hasEvidence: true };
   }
 
   // Last message is outside the range → skip this conversation entirely.
   // tooOld=true signals the crawler to stop early (conversations are newest-first).
   const tooOld = lastDate < fromDate;
-  return { filtered: true, filteredMessages: [], tooOld };
+  return { filtered: true, filteredMessages: [], tooOld, hasEvidence: true };
 }
 
 // ─── Bridge event emitters ────────────────────────────────────────────────
