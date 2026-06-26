@@ -38,10 +38,11 @@ Click **▶ Start**.
 
 The crawler will:
 1. Detect all visible conversations in the left sidebar
-2. Scroll down automatically to load more (virtual scroll)
-3. Click each conversation, wait for messages to appear, extract them
-4. Apply the date filter — conversations with zero in-range messages are skipped
-5. Save matching conversations as `dm_extractor_<name>_<timestamp>.json` in your browser's download folder
+2. Pre-filter each row by the last-message date shown in the sidebar (skips out-of-range conversations without opening them)
+3. Scroll down automatically to load more (virtual scroll)
+4. Click each in-range conversation, scroll to top to load full history, scroll back to bottom to restore newest messages, then extract
+5. Apply the date filter — conversations with zero in-range messages are skipped
+6. Save matching conversations as `dm_extractor_<name>_<timestamp>.json` inside a per-context subfolder in your Downloads folder (e.g. `messenger+123456789/`)
 
 Watch the **status area** and **log** in the panel for live feedback.
 
@@ -63,6 +64,8 @@ Repeat for each company account by switching the active account in the MBS top n
 ---
 
 ## Output Format
+
+Files are saved inside a per-context subfolder of your Downloads directory. The subfolder name is derived from the URL as `<platform>+<business_id>` (e.g. `messenger+527561502714866`). When a business_id is not present in the URL it falls back to just the platform name, and finally to `dm_extractor`. The panel logs the destination folder when a crawl starts.
 
 Each downloaded file is a JSON object:
 
@@ -121,7 +124,7 @@ Once in Done, select affected conversations and use **Mark as Open** to restore 
 | **Virtual scroll** | Meta only renders ~20–40 conversations at a time. The crawler scrolls and waits, but very large inboxes (500+ conversations) require the full scroll to finish before all are found. Do not interact with the page while the crawler is running. |
 | **Obfuscated class names** | Extraction uses `aria-label`, `role`, and `data-*` selectors wherever possible. However two class names (`x1nhvcw1` / `x13a6bvl`) are used as fallbacks for message direction. Meta occasionally deploys class renames; if direction shows `"unknown"` for all messages after a Meta update, open an issue or update those two class names in `content.js → nearestDirection()`. |
 | **Media messages** | Images, stickers, voice messages, and file attachments produce empty text and are currently omitted. Only text content is captured. |
-| **Rate limits** | The crawler waits 2.5 s between conversations by default (`DELAY_BETWEEN_CONVS` in `content.js`). Reducing this may trigger Meta's rate limiting. |
+| **Rate limits** | The crawler waits 1.5 s between conversations by default (`DELAY_BETWEEN_CONVS` in `content.js`). Reducing this may trigger Meta's rate limiting. |
 | **Multi-page accounts** | If you manage multiple Facebook Pages inside one Business Manager, you must switch the active Page manually in MBS and re-run the crawler for each one. |
 | **Session only** | Progress is kept in memory. Reloading the page resets everything. |
 
@@ -132,8 +135,9 @@ Once in Done, select affected conversations and use **Mark as Open** to restore 
 ```
 extension/
 ├── manifest.json    — Chrome MV3 manifest
+├── background.js    — Service worker: receives download requests, saves JSON into per-context subfolders via chrome.downloads
 ├── content.js       — Main logic: panel injection, extraction, crawler
-├── utils.js         — Helpers: date parsing, DOM waiting, sleep
+├── utils.js         — Helpers: date parsing, DOM waiting, sleep, getContextFolder
 ├── panel.html       — Panel UI template (injected into Shadow DOM)
 ├── panel.css        — Panel styles (isolated in Shadow DOM)
 ├── panel.js         — Panel interaction (buttons, log, progress)
