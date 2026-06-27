@@ -747,6 +747,11 @@ async function runCrawl(fromDate, toDate) {
       continue;
     }
 
+    // Always trust the URL's id over what navigateToConversation set.
+    // The final-fallback path may have set item.realId to prevId (a different
+    // conversation); reading the URL here ensures dedup uses the correct id.
+    { const actualId = getSelectedItemId(); if (actualId) item.realId = actualId; }
+
     if (item.realId) {
       if (_seenIds.has(item.realId)) {
         log('info', `Skipping duplicate: ${item.name || item.realId}`);
@@ -967,13 +972,14 @@ function getConversationItems(container) {
 
     if (rows.length >= 2) {
       console.log(`[DM Extractor] Strategy B: ${rows.length} rows at depth ${depth}`);
-      return rows.map(row => {
+      const named = [];
+      for (const row of rows) {
         const name = extractRowName(row);
-        // Fingerprint = first 80 chars of text, used as a temporary ID until real
-        // selected_item_id is known (after clicking opens the conversation).
+        if (!name) continue; // skip loading / placeholder rows (e.g. "ჩατвίρтвα…")
         const fp = 'fp:' + row.textContent.replace(/\s+/g, ' ').trim().slice(0, 80);
-        return { id: fp, href: null, name, anchor: null, row };
-      });
+        named.push({ id: fp, href: null, name, anchor: null, row });
+      }
+      if (named.length > 0) return named;
     }
 
     if (children.length === 1) {
@@ -1029,7 +1035,8 @@ function getConversationItems(container) {
         name: extractRowName(row),
         anchor: null,
         row,
-      }));
+      }))
+      .filter(item => item.name); // discard loading / placeholder rows with no readable name
   }
 
   console.log('[DM Extractor] No rows found in container');
@@ -1122,10 +1129,29 @@ async function navigateToConversation(item) {
     try { targetId = new URL(item.href).searchParams.get('selected_item_id'); } catch {}
     if (targetId) {
       if (getSelectedItemId() === targetId) return true;
+
+      // 1a. Native anchor click (triggers href + browser default nav).
       if (item.anchor) {
         item.anchor.click();
-        if (await waitForSpecificId(targetId, 2000)) return true;
+        if (await waitForSpecificId(targetId, 2500)) return true;
       }
+
+      // 1b. React fiber: WEC rows intercept clicks via React's synthetic event
+      // system; native .click() may fire the handler but React's router may need
+      // the event dispatched through fiber props to update the conversation panel.
+      const rfEls = [item.anchor, item.row,
+        ...Array.from(item.row.querySelectorAll('div,li,span'))
+          .filter(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; })
+          .slice(0, 8),
+      ].filter(Boolean);
+      for (const el of rfEls) {
+        if (isDangerousActionEl(el)) continue;
+        if (reactClick(el)) {
+          if (await waitForSpecificId(targetId, 2000)) return true;
+        }
+      }
+
+      // 1c. Pointer-event sequence on the row and its ancestors.
       let el = item.row;
       for (let i = 0; i < 4 && el && el !== document.body; i++, el = el.parentElement) {
         pointerClick(el);
@@ -1220,13 +1246,19 @@ async function navigateToConversation(item) {
   }
 
   // Final fallback: URL never changed — we're still at prevId.
-  // The most common cause is that the first sidebar item is already the
-  // active/open conversation. Treat as success: the thread is loaded and ready
-  // to extract. If prevId was already downloaded, _seenIds catches the duplicate.
+  // This is valid when the first sidebar row is already the active conversation.
+  // Verify with a name-match before accepting so we don't accidentally treat a
+  // genuinely-failed navigation as success and extract the wrong conversation.
   const finalId = getSelectedItemId();
   if (finalId && finalId === prevId) {
-    item.realId = finalId;
-    return true;
+    const currentName = (findCustomerName() || '').trim().toLowerCase();
+    const rowName     = (item.name  || '').trim().toLowerCase();
+    if (rowName && currentName && (
+      currentName.includes(rowName) || rowName.includes(currentName)
+    )) {
+      item.realId = finalId;
+      return true;
+    }
   }
 
   return false;
