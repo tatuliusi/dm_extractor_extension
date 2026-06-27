@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "test": "node test_extraction.js",
+    "test": "node test_extraction.js && node test_bugfixes.js && node test_daterange_accuracy.js",
     "test:integration": "node integration_test.js"
   },
   "devDependencies": {
