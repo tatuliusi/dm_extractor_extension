@@ -20,10 +20,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   const safeFilename = (filename || 'download.json').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
   const fullPath     = safeFolder + '/' + safeFilename;
 
-  // Encode the JSON string into a data: URL so no blob URL cross-process transfer is needed.
-  const dataUrl = 'data:application/json;charset=utf-8,' + encodeURIComponent(jsonStr);
+  // Use a Blob URL to avoid Chrome's ~2 MB data: URL size cap.
+  // URL.createObjectURL is available in MV3 service workers.
+  const blob    = new Blob([jsonStr], { type: 'application/json' });
+  const blobUrl = URL.createObjectURL(blob);
 
-  chrome.downloads.download({ url: dataUrl, filename: fullPath, saveAs: false }, downloadId => {
+  chrome.downloads.download({ url: blobUrl, filename: fullPath, saveAs: false }, downloadId => {
+    URL.revokeObjectURL(blobUrl); // Chrome has already queued the read; safe to release
     const err = chrome.runtime.lastError;
     sendResponse({ ok: !err, downloadId, error: err ? err.message : null });
   });

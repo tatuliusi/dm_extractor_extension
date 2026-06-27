@@ -846,16 +846,20 @@ async function runCrawl(fromDate, toDate) {
     };
 
     let downloaded = false;
+    let lastDlErr  = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       try { await download(output); downloaded = true; break; }
-      catch (err) { if (attempt === 0) { log('err', 'Download failed, retrying…'); await sleep(500); } }
+      catch (err) {
+        lastDlErr = err;
+        if (attempt === 0) { log('err', 'Download failed, retrying…'); await sleep(500); }
+      }
     }
 
     if (downloaded) {
       log('ok', `Downloaded (${filteredMessages.length} msgs): ${item.name || item.id}`);
       _stats.downloaded++;
     } else {
-      log('err', `Download failed after retry: ${item.name || item.id}`);
+      log('err', `Download failed after retry: ${item.name || item.id} — ${lastDlErr && lastDlErr.message}`);
       _stats.errors++;
     }
 
