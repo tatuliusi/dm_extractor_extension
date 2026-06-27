@@ -36,10 +36,17 @@
   const log          = document.getElementById('dm-log');
 
   // ─── Default date range (current calendar month) ─────────────────────────
+  // toISOString() would give UTC dates which are wrong for UTC+ users (e.g.
+  // Georgia UTC+4: local midnight = previous day in UTC → wrong default shown).
+  // Use local date components instead.
+  function localDateStr(d) {
+    const pad = n => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
   const now   = new Date();
   const first = new Date(now.getFullYear(), now.getMonth(), 1);
-  fromInput.value = first.toISOString().slice(0, 10);
-  toInput.value   = now.toISOString().slice(0, 10);
+  fromInput.value = localDateStr(first);
+  toInput.value   = localDateStr(now);
 
   // ─── Collapse / expand ───────────────────────────────────────────────────
   collapseBtn.addEventListener('click', () => {

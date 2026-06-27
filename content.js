@@ -151,11 +151,17 @@ function initPanelUI(shadow) {
   const countErr    = $('dm-count-err');
   const logEl       = $('dm-log');
 
-  // Default date range: current calendar month
+  // Default date range: current calendar month.
+  // toISOString() would give a UTC date which is wrong for UTC+ users (e.g.
+  // Georgia UTC+4: local midnight = previous day UTC → wrong default shown).
+  const _localISO = d => {
+    const p = n => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+  };
   const now   = new Date();
   const first = new Date(now.getFullYear(), now.getMonth(), 1);
-  fromInput.value = first.toISOString().slice(0, 10);
-  toInput.value   = now.toISOString().slice(0, 10);
+  fromInput.value = _localISO(first);
+  toInput.value   = _localISO(now);
 
   // ── Collapse / expand ────────────────────────────────────────────────────
   collapseBtn.addEventListener('click', () => {
@@ -591,6 +597,13 @@ const SCROLL_WAIT         = 1500; // ms to wait after scrolling for new items
 const THREAD_LOAD_TIMEOUT = 8000; // ms to wait for thread DOM
 const MAX_EMPTY_SCROLLS   = 6;    // stop scrolling after N non-productive scrolls
 
+// Local-timezone YYYY-MM-DD string from a Date. toISOString() uses UTC and
+// would show the wrong calendar date for users in UTC+ timezones.
+function localDateStr(d) {
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+
 /**
  * Start the batch crawler.
  * @param {{ from: string, to: string }} opts  ISO date strings "YYYY-MM-DD"
@@ -828,8 +841,8 @@ async function runCrawl(fromDate, toDate) {
       ...data,
       messages   : filteredMessages,
       count      : filteredMessages.length,
-      filter_from: fromDate.toISOString().slice(0, 10),
-      filter_to  : toDate.toISOString().slice(0, 10),
+      filter_from: localDateStr(fromDate),
+      filter_to  : localDateStr(toDate),
     };
 
     let downloaded = false;
