@@ -20,13 +20,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   const safeFilename = (filename || 'download.json').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
   const fullPath     = safeFolder + '/' + safeFilename;
 
-  // Use a Blob URL to avoid Chrome's ~2 MB data: URL size cap.
-  // URL.createObjectURL is available in MV3 service workers.
-  const blob    = new Blob([jsonStr], { type: 'application/json' });
-  const blobUrl = URL.createObjectURL(blob);
+  // URL.createObjectURL is NOT available in MV3 service workers.
+  // Use btoa + TextEncoder instead — both are available in SW and impose no size cap.
+  // TextEncoder gives us the UTF-8 byte array; fromCharCode maps each byte to
+  // a latin-1 char so btoa can base64-encode arbitrary Unicode content.
+  const bytes  = new TextEncoder().encode(jsonStr);
+  const chars  = Array.from(bytes, b => String.fromCharCode(b));
+  const dataUrl = 'data:application/json;base64,' + btoa(chars.join(''));
 
-  chrome.downloads.download({ url: blobUrl, filename: fullPath, saveAs: false }, downloadId => {
-    URL.revokeObjectURL(blobUrl); // Chrome has already queued the read; safe to release
+  chrome.downloads.download({ url: dataUrl, filename: fullPath, saveAs: false }, downloadId => {
     const err = chrome.runtime.lastError;
     sendResponse({ ok: !err, downloadId, error: err ? err.message : null });
   });
