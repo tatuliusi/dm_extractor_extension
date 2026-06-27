@@ -644,7 +644,7 @@ function waitIfPaused() {
 // ─── Main crawl loop ─────────────────────────────────────────────────────
 
 async function runCrawl(fromDate, toDate) {
-  const listContainer = findConversationListContainer();
+  let listContainer = findConversationListContainer();
   if (!listContainer) {
     log('err', 'Could not find conversation list. Make sure an inbox is open.');
     return;
@@ -1411,7 +1411,9 @@ async function scrollThreadToLoadAll() {
   // newest messages evicted and filterByDateRange would see stale old dates.
   region.scrollTop = region.scrollHeight;
   region.dispatchEvent(new Event('scroll', { bubbles: true }));
-  await sleep(500);
+  await sleep(300);
+  // Wait for the virtual-scroll DOM to settle (message elements re-appear).
+  await waitForCountStable(SEL, { timeout: 1500, interval: 150, stableRounds: 2, root: region });
 }
 
 // ─── Date range filtering ─────────────────────────────────────────────────
