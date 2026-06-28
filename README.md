@@ -5,6 +5,14 @@ A Chrome extension (Manifest V3) that automates bulk conversation downloads from
 
 ---
 
+## Requirements
+
+- **Google Chrome** 116 or later (Manifest V3 support required)
+- A **Meta Business Suite** account with at least one connected inbox (Messenger, Instagram DMs, or WhatsApp)
+- **Developer mode** enabled in Chrome extensions (no Web Store listing)
+
+---
+
 ## Installation
 
 1. Clone or download this repository to a local folder.
