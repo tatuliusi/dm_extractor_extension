@@ -142,14 +142,18 @@ Once in Done, select affected conversations and use **Mark as Open** to restore 
 
 ```
 extension/
-├── manifest.json    — Chrome MV3 manifest
-├── background.js    — Service worker: receives download requests, saves JSON into per-context subfolders via chrome.downloads
-├── content.js       — Main logic: panel injection, extraction, crawler
-├── utils.js         — Helpers: date parsing, DOM waiting, sleep, getContextFolder
-├── panel.html       — Panel UI template (injected into Shadow DOM)
-├── panel.css        — Panel styles (isolated in Shadow DOM)
-├── panel.js         — Panel interaction (buttons, log, progress)
-└── README.md        — This file
+├── manifest.json               — Chrome MV3 manifest
+├── background.js               — Service worker: receives download requests, saves JSON into per-context subfolders via chrome.downloads
+├── content.js                  — Main logic: panel injection, extraction, crawler
+├── utils.js                    — Helpers: date parsing, DOM waiting, sleep, getContextFolder
+├── panel.html                  — Panel UI template (injected into Shadow DOM)
+├── panel.css                   — Panel styles (isolated in Shadow DOM)
+├── panel.js                    — Panel interaction (buttons, log, progress)
+├── integration_test.js         — End-to-end tests driven against Chrome for Testing
+├── test_extraction.js          — Unit tests for message extraction logic
+├── test_daterange_accuracy.js  — Date-range filter accuracy tests (60 assertions)
+├── test_bugfixes.js            — Regression tests for specific bug fixes
+└── README.md                   — This file
 ```
 
 ---
