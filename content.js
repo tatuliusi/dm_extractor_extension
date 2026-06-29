@@ -547,6 +547,80 @@ function extract() {
     });
   }
 
+  // ── Secondary scan: system events missed by the main walker ─────────────
+  // Some Meta deploys render activity notes without role="note". This pass
+  // catches them via a positional heuristic: visible, short-text elements that
+  // are horizontally centered in the thread with no bubble-direction ancestry.
+  {
+    const regionRect = region.getBoundingClientRect();
+    const candidates = [];
+    const secWalker = document.createTreeWalker(region, NodeFilter.SHOW_ELEMENT);
+    let secNode;
+
+    while ((secNode = secWalker.nextNode())) {
+      // Skip already-captured message nodes
+      const pid = secNode.getAttribute('data-message-id') ||
+                  secNode.getAttribute('data-mid') ||
+                  secNode.getAttribute('data-msgid');
+      const gid = secNode.getAttribute('data-focusable-id') ||
+                  secNode.getAttribute('data-item-id');
+      if (pid || gid) continue;
+
+      // Skip date separators and already-handled roles
+      const role = secNode.getAttribute('role');
+      if (
+        role === 'separator' || role === 'note' || role === 'status' ||
+        (secNode.classList.contains('x14vqqas') && secNode.classList.contains('xod5an3'))
+      ) continue;
+
+      const rawText = secNode.textContent.trim();
+      if (!rawText || rawText.length < 5 || rawText.length > 200) continue;
+
+      const r = secNode.getBoundingClientRect();
+      if (!r.width || r.height < 6) continue;
+
+      // Must be horizontally centered (within middle 50% of the thread region)
+      if (regionRect.width > 0) {
+        const relCenter = (r.left + r.width / 2 - regionRect.left) / regionRect.width;
+        if (relCenter < 0.25 || relCenter > 0.75) continue;
+      }
+
+      // Must have no message-direction ancestor (not a regular bubble)
+      let hasDir = false;
+      let anc = secNode.parentElement;
+      while (anc && anc !== region) {
+        if (anc.classList.contains('x1nhvcw1') || anc.classList.contains('x13a6bvl')) {
+          hasDir = true; break;
+        }
+        anc = anc.parentElement;
+      }
+      if (hasDir) continue;
+
+      candidates.push(secNode);
+    }
+
+    // Keep only outermost candidates — discard descendants of another candidate
+    // to avoid capturing both a container element and its child text node.
+    const outermost = candidates.filter(el =>
+      !candidates.some(other => other !== el && other.contains(el))
+    );
+
+    for (const el of outermost) {
+      const text = bubbleText(el);
+      if (!text) continue;
+      const dedupeKey = 'sys:' + text.slice(0, 80);
+      if (seenMsgIds.has(dedupeKey)) continue;
+      seenMsgIds.add(dedupeKey);
+      messages.push({
+        id        : 'sys_' + messages.length,
+        date      : null,
+        direction : 'system',
+        text,
+        type      : 'system_event',
+      });
+    }
+  }
+
   // Structural fallback: when no data-attribute message IDs exist in the DOM
   // (e.g. WEC / WhatsApp Business inbox after a Meta DOM update), collect text
   // bubbles via dir="auto" elements instead.
