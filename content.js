@@ -471,6 +471,37 @@ function extract() {
       continue;
     }
 
+    // ── Operator assignment / system activity event ──────────────────────
+    // These appear as centered text (e.g. "John was assigned to this conversation")
+    // with no data-message-id. Meta uses role="note" for activity notes in MBS.
+    {
+      const role = node.getAttribute('role');
+      const testId = (node.getAttribute('data-testid') || '').toLowerCase();
+      if (
+        role === 'note' ||
+        role === 'status' ||
+        testId.includes('activity') ||
+        testId.includes('event_log') ||
+        testId.includes('assignment')
+      ) {
+        const text = bubbleText(node);
+        if (text) {
+          const dedupeKey = 'sys:' + text.slice(0, 80);
+          if (!seenMsgIds.has(dedupeKey)) {
+            seenMsgIds.add(dedupeKey);
+            messages.push({
+              id        : 'sys_' + messages.length,
+              date      : currentDate,
+              direction : 'system',
+              text,
+              type      : 'system_event',
+            });
+          }
+        }
+        continue;
+      }
+    }
+
     // ── Message bubble ──────────────────────────────────────────────────
     const primaryId = node.getAttribute('data-message-id') ||
                       node.getAttribute('data-mid') ||
