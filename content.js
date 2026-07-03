@@ -907,7 +907,14 @@ async function runCrawl(fromDate, toDate) {
   let emptyScrolls = 0;
   let consecutiveTooOld = 0;
   let seenTooNew = false; // true once a conversation newer than toDate is encountered
-  const MAX_CONSECUTIVE_TOO_OLD = 4;
+  // Stop as soon as the first confirmed too-old conversation appears once
+  // we've either already seen a too-new one (i.e. passed through the target
+  // date band) or downloaded something in-range. This makes end-date filtering
+  // strict: e.g. with `to = 1 July`, the crawler grabs every 1-July conv and
+  // halts on the first 30-June conv it encounters. The seenTooNew/downloaded
+  // guard still prevents a run of pinned old rows at the top from firing the
+  // stop before the target range has ever been reached.
+  const MAX_CONSECUTIVE_TOO_OLD = 1;
 
   while (!_stopSignal) {
     await waitIfPaused();

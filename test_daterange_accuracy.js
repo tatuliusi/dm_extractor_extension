@@ -293,21 +293,22 @@ if (tzOffset < 0) {
 console.log('\n=== 6. Crawl simulation: early-stop fires only after in-range window ===');
 
 // Simulate an inbox sorted newest-first with a mix of dates.
-// Range: June 15–20. Expected: download June 15–20 convs, stop after ≥4 consecutive too-old.
+// Range: June 15–20. Expected: download June 15–20 convs, stop immediately on
+// the first too-old row (F) — MAX_CONSECUTIVE_TOO_OLD is 1.
 const inboxConversations = [
   { name: 'A', rowDateStr: 'June 27' },  // too new
   { name: 'B', rowDateStr: 'June 26' },  // too new
   { name: 'C', rowDateStr: 'June 20' },  // in range (to boundary)
   { name: 'D', rowDateStr: 'June 18' },  // in range
   { name: 'E', rowDateStr: 'June 15' },  // in range (from boundary)
-  { name: 'F', rowDateStr: 'June 14' },  // too old
-  { name: 'G', rowDateStr: 'June 13' },  // too old
-  { name: 'H', rowDateStr: 'June 12' },  // too old
-  { name: 'I', rowDateStr: 'June 11' },  // too old → should stop here
+  { name: 'F', rowDateStr: 'June 14' },  // too old → should stop here
+  { name: 'G', rowDateStr: 'June 13' },  // should NOT be reached
+  { name: 'H', rowDateStr: 'June 12' },  // should NOT be reached
+  { name: 'I', rowDateStr: 'June 11' },  // should NOT be reached
   { name: 'J', rowDateStr: 'June 10' },  // should NOT be reached
 ];
 
-const MAX_CONSECUTIVE_TOO_OLD = 4;
+const MAX_CONSECUTIVE_TOO_OLD = 1;
 let consecutiveTooOld = 0;
 let seenTooNew = false;
 let downloaded = 0;
@@ -348,10 +349,12 @@ assert(downloadedNames.includes('D'), 'June 18 (middle) was downloaded');
 assert(downloadedNames.includes('E'), 'June 15 (from boundary) was downloaded');
 assert(!downloadedNames.includes('A'), 'June 27 (too new) was NOT downloaded');
 assert(!downloadedNames.includes('B'), 'June 26 (too new) was NOT downloaded');
+assert(!downloadedNames.includes('G'), 'June 13 was NOT reached (stopped early)');
 assert(!downloadedNames.includes('J'), 'June 10 was NOT reached (stopped early)');
-assert(stopped === true, 'Crawler stopped early after 4 consecutive too-old conversations');
-assert(stoppedAt === 'I', `Crawler stopped at conversation I (June 11), got "${stoppedAt}"`);
+assert(stopped === true, 'Crawler stopped immediately on first too-old conversation after in-range window');
+assert(stoppedAt === 'F', `Crawler stopped at conversation F (June 14 — first too-old), got "${stoppedAt}"`);
 assert(downloaded === 3, `Downloaded exactly 3 conversations (C, D, E), got ${downloaded}`);
+assert(skippedNames.length === 3, `Exactly 3 skipped (A, B too-new + F too-old), got ${skippedNames.length}`);
 
 // ─── 7. Crawl simulation: early-stop guard prevents premature stop ───────────
 
