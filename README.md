@@ -73,7 +73,14 @@ Repeat for each company account by switching the active account in the MBS top n
 
 ## Output Format
 
-Files are saved inside a per-context subfolder of your Downloads directory. The subfolder name is derived from the URL as `<platform>+<business_id>` (e.g. `messenger+527561502714866`). When a business_id is not present in the URL it falls back to just the platform name, and finally to `dm_extractor`. The panel logs the destination folder when a crawl starts.
+Files are saved inside a per-context subfolder of your Downloads directory. The extension picks the most specific label it can:
+
+1. `<platform>+<page_name>` — when the active Page name can be read from MBS's top-left account switcher (e.g. `instagram_direct+Obsidia`, `instagram_direct+Cafe_Stamba`). Multi-script names (Georgian, Cyrillic, …) are preserved; whitespace becomes `_`.
+2. `<platform>+<asset_id>` — falls back to the per-Page numeric id from the URL (e.g. `instagram_direct+807781679079979`).
+3. `<platform>` — when nothing else is available.
+4. `dm_extractor` — last-ditch fallback.
+
+`asset_id` (or `page_id`, which mirrors it for Facebook Pages) is used instead of `business_id` because `business_id` is the Business Manager account id — it stays identical across every Page under one account, so it can't distinguish `obsidia` from `cafe stamba`. The panel logs the chosen folder when a crawl starts.
 
 Each downloaded file is a JSON object:
 
@@ -157,6 +164,7 @@ extension/
 ├── test_bugfixes.js            — Regression tests for specific bug fixes
 ├── test_emoji_extraction.js    — Emoji / sticker extraction tests (IG, FB, WA)
 ├── test_operator_name.js       — Operator-assignment parsing tests
+├── test_folder_naming.js       — Per-Page download folder naming tests
 └── README.md                   — This file
 ```
 
