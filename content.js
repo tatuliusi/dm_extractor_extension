@@ -410,19 +410,65 @@ function nearestDirection(node, root) {
 }
 
 /**
+ * True if `text` contains any Unicode emoji-like codepoint. Covers the main
+ * pictographic ranges, regional-indicator flags, skin-tone modifiers, and the
+ * zero-width joiner used in compound emojis. Broad on purpose: false positives
+ * only cause us to preserve a hidden node that we would otherwise strip.
+ */
+function containsEmoji(text) {
+  if (!text) return false;
+  return /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{200D}\u{2700}-\u{27BF}]/u.test(text);
+}
+
+/**
  * Extract clean text from a message bubble.
- * Clones the element, strips visually-hidden spans (aria-hidden, sr-only, etc.),
- * then returns trimmed text content.
+ * Clones the element, materialises image-based emojis/stickers into text,
+ * strips visually-hidden spans (but preserves ones carrying emoji unicode),
+ * and returns trimmed text content.
+ *
+ * Meta renders emojis and stickers as <img alt="😊"> across Instagram,
+ * Messenger, and WhatsApp Business (WEC). textContent skips <img> entirely,
+ * so without the img→alt substitution below the emoji/sticker is lost.
  */
 function bubbleText(bubble) {
   const clone = bubble.cloneNode(true);
-  // Remove accessibility-only and explicitly hidden nodes.
-  // Note: [class*="hidden"] is intentionally omitted — it is too broad and
-  // matches Meta's obfuscated class names that contain the word "hidden" even
-  // on fully visible message text elements.
+  const doc = clone.ownerDocument || document;
+
+  // 1. Materialise <img> alt/aria-label/title into inline text.
+  //    Runs BEFORE the aria-hidden strip so <img alt="😊"> that lives inside
+  //    an <span aria-hidden="true"> wrapper (a common Meta sprite pattern)
+  //    still contributes its emoji before the wrapper decision is made.
+  clone.querySelectorAll('img').forEach(img => {
+    const alt = img.getAttribute('alt')
+             || img.getAttribute('aria-label')
+             || img.getAttribute('title')
+             || '';
+    if (alt) img.replaceWith(doc.createTextNode(alt));
+  });
+
+  // 2. Materialise role="img" wrappers with no visible text (Instagram/Facebook
+  //    sometimes render emojis as <span role="img" aria-label="😊"></span>).
+  clone.querySelectorAll('[role="img"]').forEach(el => {
+    if (el.textContent.trim()) return;
+    const label = el.getAttribute('aria-label') || '';
+    if (label) el.replaceWith(doc.createTextNode(label));
+  });
+
+  // 3. Remove screen-reader-only and explicitly hidden nodes, EXCEPT those
+  //    that carry emoji unicode. Meta wraps emoji sprite overlays in
+  //    <span aria-hidden="true">😊</span> so the actual codepoint stays in
+  //    the DOM for copy-paste; blindly stripping aria-hidden dropped emojis.
+  //
+  //    Note: [class*="hidden"] is intentionally omitted — it is too broad and
+  //    matches Meta's obfuscated class names that contain the word "hidden"
+  //    even on fully visible message text elements.
   clone.querySelectorAll(
     '[aria-hidden="true"], .sr-only, [style*="display:none"], [style*="display: none"]'
-  ).forEach(n => n.remove());
+  ).forEach(n => {
+    if (containsEmoji(n.textContent)) return;
+    n.remove();
+  });
+
   return clone.textContent.trim();
 }
 

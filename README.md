@@ -131,7 +131,7 @@ Once in Done, select affected conversations and use **Mark as Open** to restore 
 |------------|---------|
 | **Virtual scroll** | Meta only renders ~20–40 conversations at a time. The crawler scrolls and waits, but very large inboxes (500+ conversations) require the full scroll to finish before all are found. Do not interact with the page while the crawler is running. |
 | **Obfuscated class names** | Extraction uses `aria-label`, `role`, and `data-*` selectors wherever possible. However two class names (`x1nhvcw1` / `x13a6bvl`) are used as fallbacks for message direction. Meta occasionally deploys class renames; if direction shows `"unknown"` for all messages after a Meta update, open an issue or update those two class names in `content.js → nearestDirection()`. |
-| **Media messages** | Images, stickers, voice messages, and file attachments produce empty text and are currently omitted. Only text content is captured. |
+| **Media messages** | Emojis and stickers are captured via their `alt` / `aria-label` (works on Instagram, Messenger, and WhatsApp Business). Images without descriptive alt text, voice messages, and file attachments still produce empty text and are omitted. |
 | **Rate limits** | The crawler waits 1.5 s between conversations by default (`DELAY_BETWEEN_CONVS` in `content.js`). Reducing this may trigger Meta's rate limiting. |
 | **Multi-page accounts** | If you manage multiple Facebook Pages inside one Business Manager, you must switch the active Page manually in MBS and re-run the crawler for each one. |
 | **Session only** | Progress is kept in memory. Reloading the page resets everything. |
@@ -153,6 +153,7 @@ extension/
 ├── test_extraction.js          — Unit tests for message extraction logic
 ├── test_daterange_accuracy.js  — Date-range filter accuracy tests (60 assertions)
 ├── test_bugfixes.js            — Regression tests for specific bug fixes
+├── test_emoji_extraction.js    — Emoji / sticker extraction tests (IG, FB, WA)
 └── README.md                   — This file
 ```
 
