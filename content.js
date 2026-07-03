@@ -1359,21 +1359,23 @@ function extractRowDate(row) {
 async function navigateToConversation(item) {
   if (!document.body.contains(item.row)) return false;
 
-  // FAST PATH: if a conversation is already open in the thread pane and its
-  // header name matches this row's name, we're already navigated. Skip every
-  // click / pushState / fiber strategy — otherwise we'd waste 5–25 s cycling
-  // through them before the "final fallback" name check catches this case.
-  // This is what makes the very first download feel slow: the initial sidebar
-  // row is usually the currently-open conversation, so every strategy above
-  // fires without changing the URL, and only the final fallback rescues it.
-  const earlyId = getSelectedItemId();
-  if (earlyId && item.name) {
+  // FAST PATH: if the thread pane header name matches this row's name, we're
+  // already navigated. Skip every click / pushState / fiber strategy —
+  // otherwise every one of them times out (because the URL isn't changing —
+  // because we're already there) and the first "download" hangs 45 s before
+  // the crawler gives up.
+  //
+  // Critically, this check does NOT depend on selected_item_id being in the
+  // URL. Meta's Instagram inbox often omits that param entirely (see the
+  // per-Page URLs the user supplied for lolita and cafe stamba). Name-match
+  // alone is sufficient evidence and works on every surface.
+  if (item.name) {
     const currentName = (findCustomerName() || '').trim().toLowerCase();
     const rowName     = item.name.trim().toLowerCase();
-    if (currentName && rowName && (
+    if (currentName && rowName && rowName.length >= 2 && (
       currentName.includes(rowName) || rowName.includes(currentName)
     )) {
-      item.realId = earlyId;
+      item.realId = getSelectedItemId(); // may be null — that's fine
       return true;
     }
   }
@@ -1510,17 +1512,17 @@ async function navigateToConversation(item) {
   }
 
   // Final fallback: URL never changed — we're still at prevId.
-  // This is valid when the first sidebar row is already the active conversation.
-  // Verify with a name-match before accepting so we don't accidentally treat a
-  // genuinely-failed navigation as success and extract the wrong conversation.
+  // Valid when the row IS already the active conversation. Confirm with a
+  // name match. Runs even when the URL has no selected_item_id at all
+  // (finalId === prevId === null on Meta surfaces that omit that param).
   const finalId = getSelectedItemId();
-  if (finalId && finalId === prevId) {
+  if (finalId === prevId) {
     const currentName = (findCustomerName() || '').trim().toLowerCase();
     const rowName     = (item.name  || '').trim().toLowerCase();
-    if (rowName && currentName && (
+    if (rowName && currentName && rowName.length >= 2 && (
       currentName.includes(rowName) || rowName.includes(currentName)
     )) {
-      item.realId = finalId;
+      item.realId = finalId; // may be null — dedup falls back to item.id
       return true;
     }
   }
