@@ -331,11 +331,26 @@ function findActivePageName(doc) {
   push('[role="banner"] [role="button"][aria-label]');
   push('header [role="button"][aria-label]');
   push('header strong');
+  // Additional MBS patterns seen on newer deploys
+  push('[aria-label*="Business account"]');
+  push('[aria-label*="Page account"]');
+  push('[data-visualcompletion="ignore-dynamic"] strong');
 
   for (const el of collect) {
     const raw = el.getAttribute('aria-label') || el.textContent || '';
     if (isPlausiblePageName(raw)) return raw.replace(/\s+/g, ' ').trim();
   }
+
+  // Last resort: parse document.title. MBS often sets it to something like
+  // "Inbox | Obsidia | Meta Business Suite" — the middle segment is the Page.
+  const t = (d.title || '').trim();
+  if (t) {
+    const segments = t.split(/\s*[|·—–-]\s*/).map(s => s.trim()).filter(Boolean);
+    for (const seg of segments) {
+      if (isPlausiblePageName(seg)) return seg;
+    }
+  }
+
   return null;
 }
 
@@ -358,8 +373,12 @@ function findActivePageName(doc) {
  *
  * @param {string} [hrefOverride]   Optional URL to parse (defaults to window.location.href)
  * @param {Document} [docOverride]  Optional DOM to probe (defaults to document)
+ * @param {string} [nameOverride]   Optional user-supplied Page name (from the
+ *   panel's "Page" text input). When provided (non-empty), wins over the DOM
+ *   probe — nothing beats the user typing "Cafe Stamba" directly, and MBS's
+ *   DOM changes often enough that auto-detection can't be relied upon alone.
  */
-function getContextFolder(hrefOverride, docOverride) {
+function getContextFolder(hrefOverride, docOverride, nameOverride) {
   try {
     const url = new URL(hrefOverride || window.location.href);
     const pathMatch = url.pathname.match(/\/inbox\/([^/?#]+)/i);
@@ -367,7 +386,8 @@ function getContextFolder(hrefOverride, docOverride) {
     // page_id when present (FB Pages), else asset_id (IG accounts).
     const assetId   = url.searchParams.get('page_id')
                    || url.searchParams.get('asset_id');
-    const pageName  = findActivePageName(docOverride);
+    const overrideTrim = nameOverride ? String(nameOverride).trim() : '';
+    const pageName  = overrideTrim || findActivePageName(docOverride);
     const pageSlug  = pageName ? slugifyPageName(pageName) : null;
 
     if (platform && pageSlug) return platform + '+' + pageSlug;
@@ -376,6 +396,19 @@ function getContextFolder(hrefOverride, docOverride) {
     if (assetId)              return 'dm_extractor+' + assetId;
   } catch { /* ignore malformed URL */ }
   return 'dm_extractor';
+}
+
+/**
+ * Return the per-Page asset id from the URL (page_id, falling back to
+ * asset_id). Used to key the localStorage entry that remembers the Page name
+ * the user typed for this particular Page, so switching pages doesn't lose
+ * the label.
+ */
+function getPageAssetId(hrefOverride) {
+  try {
+    const url = new URL(hrefOverride || window.location.href);
+    return url.searchParams.get('page_id') || url.searchParams.get('asset_id') || null;
+  } catch { return null; }
 }
 
 /**

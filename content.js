@@ -22,6 +22,10 @@ let _stopSignal   = false;
 let _shadowHost   = null;
 const _seenIds    = new Set();
 let _stats        = { downloaded: 0, skipped: 0, errors: 0, convIndex: 0, convTotal: 0 };
+// User-typed Page name from the panel input, used as the download folder
+// label. Persisted per-Page in localStorage keyed by asset_id.
+let _pageNameOverride = '';
+const PAGE_NAME_STORAGE_PREFIX = 'dm_extractor_page:';
 
 // ─── Guard: don't initialise twice on SPA navigations ─────────────────────
 if (window.__dmExtractorLoaded) {
@@ -138,6 +142,7 @@ function initPanelUI(shadow) {
 
   const panel       = $('dm-panel');
   const collapseBtn = $('dm-collapse-btn');
+  const pageInput   = $('dm-page-name');
   const fromInput   = $('dm-from');
   const toInput     = $('dm-to');
   const startBtn    = $('dm-start-btn');
@@ -162,6 +167,29 @@ function initPanelUI(shadow) {
   const first = new Date(now.getFullYear(), now.getMonth(), 1);
   fromInput.value = _localISO(first);
   toInput.value   = _localISO(now);
+
+  // ── Page name field: pre-fill and persist per-Page ───────────────────────
+  // Precedence: previously-saved value for this Page > best DOM auto-detect >
+  // empty string. Users can always type a different name — that value wins
+  // over the DOM probe when the crawler runs (see utils.js:getContextFolder).
+  {
+    const assetId = getPageAssetId();
+    const storageKey = assetId ? PAGE_NAME_STORAGE_PREFIX + assetId : null;
+    let initial = '';
+    try {
+      if (storageKey) initial = localStorage.getItem(storageKey) || '';
+    } catch { /* localStorage may be blocked in some tab contexts */ }
+    if (!initial) initial = findActivePageName() || '';
+    pageInput.value = initial;
+    _pageNameOverride = initial;
+
+    pageInput.addEventListener('input', () => {
+      _pageNameOverride = pageInput.value;
+      try {
+        if (storageKey) localStorage.setItem(storageKey, pageInput.value);
+      } catch { /* ignore */ }
+    });
+  }
 
   // ── Collapse / expand ────────────────────────────────────────────────────
   collapseBtn.addEventListener('click', () => {
@@ -807,7 +835,7 @@ function download(data) {
     .slice(0, 60);
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const filename  = `dm_extractor_${name}_${timestamp}.json`;
-  const folder    = getContextFolder();
+  const folder    = getContextFolder(undefined, undefined, _pageNameOverride);
   const jsonStr   = JSON.stringify(data, null, 2);
 
   return new Promise((resolve, reject) => {
@@ -859,7 +887,7 @@ async function startCrawler({ from, to }) {
 
   log('info', `Starting batch. Range: ${from} → ${to}`);
   log('info', `Inbox: ${detectInboxType()}`);
-  log('info', `Saving to: Downloads/${getContextFolder()}/`);
+  log('info', `Saving to: Downloads/${getContextFolder(undefined, undefined, _pageNameOverride)}/`);
 
   emitProgress({ inbox: detectInboxType() });
 

@@ -104,7 +104,8 @@
   min-width: 36px;
 }
 
-.dm-date-input {
+.dm-date-input,
+.dm-text-input {
   flex: 1;
   background: #3a3b3c;
   border: 1px solid #4e4f50;
@@ -116,7 +117,9 @@
   transition: border-color 0.15s;
   color-scheme: dark;
 }
-.dm-date-input:focus { border-color: #2d88ff; }
+.dm-date-input:focus,
+.dm-text-input:focus { border-color: #2d88ff; }
+.dm-text-input::placeholder { color: #6a6d70; font-style: italic; }
 
 /* ─── Buttons ─────────────────────────────────────────────────────────────── */
 

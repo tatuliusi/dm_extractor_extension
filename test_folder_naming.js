@@ -66,20 +66,31 @@ function findActivePageName(doc) {
   push('[role="banner"] [role="button"][aria-label]');
   push('header [role="button"][aria-label]');
   push('header strong');
+  push('[aria-label*="Business account"]');
+  push('[aria-label*="Page account"]');
+  push('[data-visualcompletion="ignore-dynamic"] strong');
   for (const el of collect) {
     const raw = el.getAttribute('aria-label') || el.textContent || '';
     if (isPlausiblePageName(raw)) return raw.replace(/\s+/g, ' ').trim();
   }
+  const t = (doc.title || '').trim();
+  if (t) {
+    const segments = t.split(/\s*[|·—–-]\s*/).map(s => s.trim()).filter(Boolean);
+    for (const seg of segments) {
+      if (isPlausiblePageName(seg)) return seg;
+    }
+  }
   return null;
 }
 
-function getContextFolder(href, doc) {
+function getContextFolder(href, doc, nameOverride) {
   try {
     const url = new URL(href);
     const pathMatch = url.pathname.match(/\/inbox\/([^/?#]+)/i);
     const platform  = pathMatch ? pathMatch[1] : null;
     const assetId   = url.searchParams.get('page_id') || url.searchParams.get('asset_id');
-    const pageName  = doc ? findActivePageName(doc) : null;
+    const overrideTrim = nameOverride ? String(nameOverride).trim() : '';
+    const pageName  = overrideTrim || (doc ? findActivePageName(doc) : null);
     const pageSlug  = pageName ? slugifyPageName(pageName) : null;
     if (platform && pageSlug) return platform + '+' + pageSlug;
     if (platform && assetId)  return platform + '+' + assetId;
@@ -87,6 +98,13 @@ function getContextFolder(href, doc) {
     if (assetId)              return 'dm_extractor+' + assetId;
   } catch { /* ignore malformed URL */ }
   return 'dm_extractor';
+}
+
+function getPageAssetId(href) {
+  try {
+    const url = new URL(href);
+    return url.searchParams.get('page_id') || url.searchParams.get('asset_id') || null;
+  } catch { return null; }
 }
 
 // ─── Real URLs supplied by the user ──────────────────────────────────────────
@@ -216,6 +234,76 @@ assert(getContextFolder('not-a-valid-url', emptyDoc) === 'dm_extractor',
 // business_id can't distinguish Pages.
 assert(getContextFolder('https://business.facebook.com/latest/inbox/messenger?business_id=999', emptyDoc) === 'messenger',
   'business_id alone → falls through to platform-only (asset_id is required for per-Page folder)');
+
+// ─── Test 7: user-typed nameOverride beats the DOM probe ────────────────────
+
+console.log('\n=== Test: nameOverride from panel input wins ===');
+
+// Even with a DOM name available, the user's typed value should win.
+const overrideBaseDoc = new JSDOM(`<!DOCTYPE html><html><body>
+  <div data-pagelet="AccountSwitcher_x"><strong>Some Auto Name</strong></div>
+</body></html>`).window.document;
+
+assert(getContextFolder(URL_OBSIDIA, overrideBaseDoc, 'Obsidia') === 'instagram_direct+Obsidia',
+  'explicit override "Obsidia" wins over DOM "Some Auto Name"');
+
+// Slugification runs on the override
+assert(getContextFolder(URL_STAMBA, emptyDoc, 'Cafe Stamba') === 'instagram_direct+Cafe_Stamba',
+  'override with spaces slugified');
+
+assert(getContextFolder(URL_OBSIDIA, emptyDoc, 'ობსიდია / Obsidia!') === 'instagram_direct+ობსიდია_Obsidia',
+  'override with punctuation cleaned and Georgian preserved');
+
+// Empty/whitespace override → treated as no override, fall through to auto-detect
+assert(getContextFolder(URL_OBSIDIA, overrideBaseDoc, '') === 'instagram_direct+Some_Auto_Name',
+  'empty override falls back to DOM auto-detect');
+
+assert(getContextFolder(URL_OBSIDIA, overrideBaseDoc, '   ') === 'instagram_direct+Some_Auto_Name',
+  'whitespace-only override falls back to DOM auto-detect');
+
+// No DOM auto-detect + no override → asset_id
+assert(getContextFolder(URL_OBSIDIA, emptyDoc, '') === 'instagram_direct+807781679079979',
+  'empty override + empty DOM → asset_id fallback');
+
+assert(getContextFolder(URL_OBSIDIA, emptyDoc, undefined) === 'instagram_direct+807781679079979',
+  'undefined override + empty DOM → asset_id fallback');
+
+// ─── Test 8: document.title fallback ────────────────────────────────────────
+
+console.log('\n=== Test: document.title parsing as last-resort probe ===');
+
+const titleDom = new JSDOM(
+  `<!DOCTYPE html><html><head><title>Inbox | Obsidia | Meta Business Suite</title></head><body></body></html>`
+).window.document;
+
+assert(getContextFolder(URL_OBSIDIA, titleDom) === 'instagram_direct+Obsidia',
+  'page name extracted from document.title middle segment');
+
+const titleDashDom = new JSDOM(
+  `<!DOCTYPE html><html><head><title>Cafe Stamba - Meta Business Suite</title></head><body></body></html>`
+).window.document;
+
+assert(getContextFolder(URL_STAMBA, titleDashDom) === 'instagram_direct+Cafe_Stamba',
+  'dash-separated title works');
+
+// Generic title (no page name) → falls through to asset_id
+const genericTitleDom = new JSDOM(
+  `<!DOCTYPE html><html><head><title>Meta Business Suite</title></head><body></body></html>`
+).window.document;
+
+assert(getContextFolder(URL_OBSIDIA, genericTitleDom) === 'instagram_direct+807781679079979',
+  'generic-only title → asset_id fallback');
+
+// ─── Test 9: getPageAssetId helper ──────────────────────────────────────────
+
+console.log('\n=== Test: getPageAssetId — used to key localStorage per-Page ===');
+
+assert(getPageAssetId(URL_OBSIDIA) === '807781679079979', 'obsidia asset_id extracted');
+assert(getPageAssetId(URL_LOLITA)  === '471864186344525', 'lolita page_id extracted');
+assert(getPageAssetId(URL_STAMBA)  === '375265913266989', 'stamba page_id extracted');
+assert(getPageAssetId('https://business.facebook.com/latest/inbox/messenger') === null,
+  'no asset_id / page_id → null');
+assert(getPageAssetId('not-a-url') === null, 'malformed URL → null');
 
 // ─── Summary ────────────────────────────────────────────────────────────────
 
