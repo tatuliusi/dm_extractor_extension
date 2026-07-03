@@ -1705,18 +1705,27 @@ async function scrollThreadToLoadAll() {
   if (!region) return;
 
   const BATCH_WAIT = 700;  // ms to allow one batch of older messages to render
-  const MAX_BATCHES = 25;  // safety cap: 25 × 0.7 s = 17.5 s max
+  const MAX_BATCHES = 30;  // safety cap: 30 × 0.7 s = 21 s max
+  const STABLE_ROUNDS_TOP = 2; // require this many consecutive no-growth rounds
   const SEL = '[data-message-id],[data-mid],[data-msgid],[data-focusable-id],[data-item-id]';
 
+  // Require several consecutive rounds of no growth before declaring the
+  // history fully loaded. MBS occasionally pauses between lazy-load batches;
+  // a single no-growth round used to bail early and truncate long threads.
   let prev = -1;
+  let stableRounds = 0;
   for (let i = 0; i < MAX_BATCHES; i++) {
     if (_stopSignal) break;
     region.scrollTop = 0;
     region.dispatchEvent(new Event('scroll', { bubbles: true }));
     await sleep(BATCH_WAIT);
     const count = region.querySelectorAll(SEL).length;
-    if (count === prev) break; // nothing new loaded → reached the beginning
-    prev = count;
+    if (count === prev) {
+      if (++stableRounds >= STABLE_ROUNDS_TOP) break;
+    } else {
+      stableRounds = 0;
+      prev = count;
+    }
   }
 
   // Scroll back to the bottom so the most-recent messages are in the DOM when
@@ -1724,9 +1733,10 @@ async function scrollThreadToLoadAll() {
   // newest messages evicted and filterByDateRange would see stale old dates.
   region.scrollTop = region.scrollHeight;
   region.dispatchEvent(new Event('scroll', { bubbles: true }));
-  await sleep(300);
-  // Wait for the virtual-scroll DOM to settle (message elements re-appear).
-  await waitForCountStable(SEL, { timeout: 1500, interval: 150, stableRounds: 2, root: region });
+  await sleep(400);
+  // Wait longer for the virtual-scroll DOM to fully settle before extract().
+  // Larger stableRounds + higher timeout catches slow batches on long threads.
+  await waitForCountStable(SEL, { timeout: 3000, interval: 150, stableRounds: 3, root: region });
 }
 
 // ─── Date range filtering ─────────────────────────────────────────────────
