@@ -1352,6 +1352,25 @@ function extractRowDate(row) {
 async function navigateToConversation(item) {
   if (!document.body.contains(item.row)) return false;
 
+  // FAST PATH: if a conversation is already open in the thread pane and its
+  // header name matches this row's name, we're already navigated. Skip every
+  // click / pushState / fiber strategy — otherwise we'd waste 5–25 s cycling
+  // through them before the "final fallback" name check catches this case.
+  // This is what makes the very first download feel slow: the initial sidebar
+  // row is usually the currently-open conversation, so every strategy above
+  // fires without changing the URL, and only the final fallback rescues it.
+  const earlyId = getSelectedItemId();
+  if (earlyId && item.name) {
+    const currentName = (findCustomerName() || '').trim().toLowerCase();
+    const rowName     = item.name.trim().toLowerCase();
+    if (currentName && rowName && (
+      currentName.includes(rowName) || rowName.includes(currentName)
+    )) {
+      item.realId = earlyId;
+      return true;
+    }
+  }
+
   // block:'nearest' causes the minimum sidebar scroll needed to make the row
   // visible; 'center' was scrolling too much and triggering virtual-scroll recycling
   try { item.row.scrollIntoView({ block: 'nearest', behavior: 'instant' }); } catch {}
