@@ -268,24 +268,112 @@ function getSelectedItemId(url) {
 }
 
 /**
- * Build the download subfolder name from the current page URL.
- * Format: "{platform}+{business_id}"  e.g. "instagram_direct+527561502714866"
- *
- * Platform  — the path segment immediately after /inbox/
- * Business ID — the business_id query parameter
- *
- * Falls back gracefully: only platform, only business_id, or "dm_extractor".
+ * True if `s` looks like a plausible page/business display name — non-empty,
+ * 2–60 chars, contains at least one letter, and is not a generic MBS UI
+ * string that would leak in from the header (e.g. "Inbox", "Notifications").
  */
-function getContextFolder() {
-  try {
-    const url        = new URL(window.location.href);
-    const pathMatch  = url.pathname.match(/\/inbox\/([^/?#]+)/i);
-    const platform   = pathMatch ? pathMatch[1] : null;
-    const businessId = url.searchParams.get('business_id');
+function isPlausiblePageName(s) {
+  if (!s) return false;
+  const t = String(s).replace(/\s+/g, ' ').trim();
+  if (t.length < 2 || t.length > 60) return false;
+  if (!/\p{L}/u.test(t)) return false;
+  if (/^(inbox|messages?|home|search|settings|notifications?|meta business suite|help|create|calendar|posts?)$/i.test(t)) return false;
+  return true;
+}
 
-    if (platform && businessId) return platform + '+' + businessId;
-    if (platform)               return platform;
-    if (businessId)             return 'dm_extractor+' + businessId;
+/**
+ * Slugify a name for use as a folder path segment. Keeps Unicode letters (any
+ * script — Latin, Cyrillic, Georgian, …), digits, hyphens and underscores;
+ * replaces whitespace with '_' and caps the result at 40 chars.
+ */
+function slugifyPageName(name) {
+  const cleaned = String(name)
+    .replace(/[^\p{L}\p{N} _-]/gu, '')  // strip punctuation, emoji, symbols
+    .trim()
+    .replace(/\s+/g, '_')
+    .slice(0, 40);
+  return cleaned || null;
+}
+
+/**
+ * Best-effort probe of MBS's top-left account/page switcher for the active
+ * Page / Business display name. Returns null when no plausible candidate is
+ * found. Meta rearranges these selectors between deploys, so we try several
+ * shapes and stop at the first match that passes isPlausiblePageName().
+ *
+ * @param {Document} [doc=document]
+ */
+function findActivePageName(doc) {
+  const d = doc || document;
+  const seen = new Set();
+  const collect = [];
+
+  const push = sel => {
+    d.querySelectorAll(sel).forEach(el => {
+      if (seen.has(el)) return;
+      seen.add(el);
+      collect.push(el);
+    });
+  };
+
+  // Data-pagelet / data-testid patterns Meta uses across MBS deploys for the
+  // top-left account switcher. Any of these hold the active page name.
+  push('[data-pagelet*="AccountSwitcher"] [dir="auto"]');
+  push('[data-pagelet*="AccountSwitcher"] strong');
+  push('[data-pagelet*="PageSwitcher"] [dir="auto"]');
+  push('[data-pagelet*="PageSwitcher"] strong');
+  push('[data-testid*="account_switcher"] strong');
+  push('[data-testid*="account_switcher"] span');
+  push('[data-testid*="page_switcher"] strong');
+  push('[data-testid*="business_switcher"] strong');
+  push('[data-testid*="business_switcher"] span');
+  // Header banner button carrying the current page name as aria-label
+  push('[role="banner"] [role="button"][aria-label]');
+  push('header [role="button"][aria-label]');
+  push('header strong');
+
+  for (const el of collect) {
+    const raw = el.getAttribute('aria-label') || el.textContent || '';
+    if (isPlausiblePageName(raw)) return raw.replace(/\s+/g, ' ').trim();
+  }
+  return null;
+}
+
+/**
+ * Build the download subfolder name from the current page URL and, when
+ * possible, the active Page name shown in MBS's top navigation.
+ *
+ * Preference order:
+ *   1. "{platform}+{page_slug}"     — human-readable, from account switcher
+ *   2. "{platform}+{asset_id}"      — unique per Page (numeric)
+ *   3. "{platform}"                 — path segment only
+ *   4. "dm_extractor+{asset_id}"    — no platform detected
+ *   5. "dm_extractor"               — nothing usable
+ *
+ * Why not business_id? MBS's business_id is the Business Manager account
+ * identifier — it is IDENTICAL across every Page a user manages under one
+ * Business Manager, so it cannot distinguish "obsidia" from "cafe stamba".
+ * asset_id (and page_id, which mirrors it for FB Pages) varies per Page and
+ * is the correct per-Page identifier.
+ *
+ * @param {string} [hrefOverride]   Optional URL to parse (defaults to window.location.href)
+ * @param {Document} [docOverride]  Optional DOM to probe (defaults to document)
+ */
+function getContextFolder(hrefOverride, docOverride) {
+  try {
+    const url = new URL(hrefOverride || window.location.href);
+    const pathMatch = url.pathname.match(/\/inbox\/([^/?#]+)/i);
+    const platform  = pathMatch ? pathMatch[1] : null;
+    // page_id when present (FB Pages), else asset_id (IG accounts).
+    const assetId   = url.searchParams.get('page_id')
+                   || url.searchParams.get('asset_id');
+    const pageName  = findActivePageName(docOverride);
+    const pageSlug  = pageName ? slugifyPageName(pageName) : null;
+
+    if (platform && pageSlug) return platform + '+' + pageSlug;
+    if (platform && assetId)  return platform + '+' + assetId;
+    if (platform)             return platform;
+    if (assetId)              return 'dm_extractor+' + assetId;
   } catch { /* ignore malformed URL */ }
   return 'dm_extractor';
 }
