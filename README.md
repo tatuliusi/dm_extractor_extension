@@ -81,6 +81,7 @@ Each downloaded file is a JSON object:
 {
   "thread": "Contact Name",
   "customer_name": "Contact Name",
+  "operator_name": "Talia Doidzee",
   "url": "https://business.facebook.com/...",
   "extracted_at": "2025-05-15T10:23:00.000Z",
   "filtered": true,
@@ -100,7 +101,8 @@ Each downloaded file is a JSON object:
 ```
 
 `filtered: true` is only present when the date filter removed some messages from the full thread.  
-`direction` is `"inbound"` (customer → you) or `"outbound"` (you → customer).
+`direction` is `"inbound"` (customer → you) or `"outbound"` (you → customer).  
+`operator_name` is the currently assigned support agent (parsed from the latest "Assigned to X" system event or the live conversation label). It is `null` when no assignment is detected.
 
 ---
 
@@ -154,6 +156,7 @@ extension/
 ├── test_daterange_accuracy.js  — Date-range filter accuracy tests (60 assertions)
 ├── test_bugfixes.js            — Regression tests for specific bug fixes
 ├── test_emoji_extraction.js    — Emoji / sticker extraction tests (IG, FB, WA)
+├── test_operator_name.js       — Operator-assignment parsing tests
 └── README.md                   — This file
 ```
 

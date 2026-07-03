@@ -473,6 +473,80 @@ function bubbleText(bubble) {
 }
 
 /**
+ * Extract an operator name from a system-event line like
+ * "Assigned to Talia Doidzee" or "Talia Doidzee-ს მიენიჭა". Returns the name
+ * or null if the text is not an assignment notification.
+ *
+ * Matches (case-insensitive):
+ *   • "Assigned to <name>" / "Assigned <name>" / "Reassigned to <name>"
+ *   • "<name> was assigned"
+ *   • Georgian: "<name>-ს მიენიჭა" / "<name>ს მიენიჭა"
+ * Trailing punctuation, " by <someone>" clauses, and " this conversation" are
+ * stripped from the captured group.
+ */
+function parseAssignmentText(text) {
+  if (!text) return null;
+  const cleaned = String(text).replace(/\s+/g, ' ').trim();
+
+  const strip = raw => raw
+    .replace(/\s+by\s+.+$/i, '')            // drop trailing " by Manager"
+    .replace(/\s+this conversation.*$/i, '')
+    .replace(/[.!?,;:]+$/, '')
+    .trim();
+
+  // Try "X was/has been/is assigned…" first — otherwise the more permissive
+  // "assigned to X" match below would grab "this conversation" as the name.
+  const m2 = cleaned.match(/^(.+?)\s+(?:was|has been|is)\s+(?:(?:re)?assigned|taken|picked up)/i);
+  if (m2) {
+    const n = strip(m2[1]);
+    if (n) return n;
+  }
+
+  const m1 = cleaned.match(/(?:^|\W)(?:re)?assigned(?:\s+to)?\s+(.+?)$/i);
+  if (m1) {
+    const n = strip(m1[1]);
+    if (n) return n;
+  }
+
+  // Georgian: "მიენიჭა" ("was assigned to"). Name usually precedes with -ს suffix.
+  const m3 = cleaned.match(/^(.+?)-?ს\s*მიენიჭა/);
+  if (m3) {
+    const n = strip(m3[1]);
+    if (n) return n;
+  }
+
+  return null;
+}
+
+/**
+ * DOM fallback: scan the current page for a live "Assigned to X" pill/label
+ * (Meta renders one under the conversation row and inside the thread header
+ * without producing a system-event message on some deploys).
+ * Returns the operator name or null.
+ */
+function findAssignmentLabel() {
+  const patterns = [
+    /^\s*assigned\s+to\s+(.+?)\s*$/i,
+    /^\s*reassigned\s+to\s+(.+?)\s*$/i,
+    /^(.+?)-?ს\s*მიენიჭა/,
+  ];
+  // Only leaf-ish elements to avoid grabbing large text blocks.
+  for (const el of document.querySelectorAll('span, div, p, small')) {
+    if (el.children.length > 2) continue;
+    const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!t || t.length > 120) continue;
+    for (const re of patterns) {
+      const m = t.match(re);
+      if (m && m[1]) {
+        const name = m[1].replace(/[.!?,;:]+$/, '').trim();
+        if (name && name.length <= 80) return name;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Walk the full thread DOM and collect all messages.
  *
  * Returns:
@@ -695,9 +769,22 @@ function extract() {
       console.log(`[DM Extractor] Structural fallback: ${messages.length} messages via dir="auto"`);
   }
 
+  // Latest assigned operator: walk messages newest-first, take the first
+  // system_event whose text parses as an assignment. Falls back to a live DOM
+  // scan when Meta doesn't emit a system-event message for the assignment.
+  let operatorName = null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.type !== 'system_event') continue;
+    const parsed = parseAssignmentText(m.text);
+    if (parsed) { operatorName = parsed; break; }
+  }
+  if (!operatorName) operatorName = findAssignmentLabel();
+
   return {
     thread       : threadTitle,
     customer_name: customerName,
+    operator_name: operatorName,
     url          : window.location.href,
     extracted_at : new Date().toISOString(),
     count        : messages.length,
