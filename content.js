@@ -1190,6 +1190,50 @@ function findConversationListContainer() {
 }
 
 /**
+ * True if `el` is a sidebar warning/notice banner (e.g. WhatsApp's "account
+ * restricted" panel) rather than a conversation row.
+ *
+ * On restricted WhatsApp accounts, MBS renders a ~180 px notice at the top of
+ * the sidebar. Its shape (height, width, left) matches the conversation-row
+ * heuristics, so without an explicit skip it was (a) getting picked as a
+ * "row" by Strategies B/C and (b) inflating the header wrapper enough that
+ * the "descend into tallest left-side child" fallback routed descent into
+ * the header instead of the conversation list.
+ *
+ * Text-keyword matching is safe here because the check is only ever applied
+ * to sidebar structure — never to message-bubble content — so a message that
+ * happens to contain "Commerce Policy" cannot mis-fire this filter.
+ */
+function isSidebarNotice(el) {
+  if (!el || !el.getAttribute) return false;
+  const role = el.getAttribute('role');
+  if (role === 'alert' || role === 'alertdialog') return true;
+  const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+  return /account restricted|commerce policy|business support home/i.test(text);
+}
+
+/**
+ * True if `el` sits underneath a sidebar notice (walks up to `stopAt`, exclusive).
+ * Used by Strategy C to reject candidates that live inside a warning banner.
+ */
+function isInsideSidebarNotice(el, stopAt) {
+  let cur = el && el.parentElement;
+  while (cur && cur !== stopAt) {
+    if (isSidebarNotice(cur)) return true;
+    cur = cur.parentElement;
+  }
+  return false;
+}
+
+/** True if `el`'s subtree contains a conversation-row signal (thread_title span or a selected_item_id anchor). */
+function hasConversationRowSignal(el) {
+  if (!el || !el.querySelector) return false;
+  return !!(el.querySelector('[data-surface*="thread_title"]') ||
+            el.querySelector('a[href*="selected_item_id"]'));
+}
+
+/**
  * Collect visible conversation items from the sidebar container.
  * Returns Array<{ id, href, name, anchor, row, realId? }>
  *
@@ -1236,6 +1280,9 @@ function getConversationItems(container) {
 
     // Look for children that match a typical conversation row shape
     const rows = children.filter(el => {
+      // Skip WhatsApp "account restricted" and similar sidebar notices — they
+      // fit the shape filter but are not conversation rows.
+      if (isSidebarNotice(el)) return false;
       const r = el.getBoundingClientRect();
       if (!(r.height >= 50 && r.height <= 220 && r.width > 80 && r.left < half && r.left >= 0)) return false;
       // Skip placeholder / loading rows (e.g. "ჩატვირთვა…" = "Loading…")
@@ -1261,13 +1308,28 @@ function getConversationItems(container) {
     } else if (children.length > 1) {
       // Multiple children but no rows matched yet — the found container may be a
       // broader sidebar that also holds a search box, filter tabs, or restriction
-      // banners alongside the actual conversation list. Pick the tallest left-side
-      // child (most likely the conversation list wrapper) and descend into it.
-      const candidate = children
-        .filter(el => { const r = el.getBoundingClientRect(); return r.left < half && r.height > 100 && r.width > 80; })
+      // banners alongside the actual conversation list. Prefer a child whose
+      // subtree carries a real conversation-row signal (thread_title span or a
+      // selected_item_id anchor); only fall back to "tallest left-side child"
+      // when no signal is present.
+      //
+      // The signal-first pick is what makes this robust to the WhatsApp
+      // "account restricted" banner: on restricted accounts that banner
+      // (~180 px) can inflate the header wrapper enough that it outweighs the
+      // real conversation-list wrapper, so a naive "tallest wins" descends
+      // into the header and misses every row.
+      const eligible = children.filter(el => {
+        if (isSidebarNotice(el)) return false;
+        const r = el.getBoundingClientRect();
+        return r.left < half && r.height > 100 && r.width > 80;
+      });
+      const signalled = eligible.filter(hasConversationRowSignal);
+      const pool = signalled.length > 0 ? signalled : eligible;
+      const candidate = pool
         .sort((a, b) => b.getBoundingClientRect().height - a.getBoundingClientRect().height)[0];
       if (candidate && candidate !== level) {
-        console.log(`[DM Extractor] Strategy B depth ${depth}: ${children.length} siblings, descending into tallest (${Math.round(candidate.getBoundingClientRect().height)}px)`);
+        const kind = signalled.length > 0 ? 'signalled' : 'tallest';
+        console.log(`[DM Extractor] Strategy B depth ${depth}: ${children.length} siblings, descending into ${kind} (${Math.round(candidate.getBoundingClientRect().height)}px)`);
         level = candidate;
       } else {
         break;
@@ -1284,6 +1346,9 @@ function getConversationItems(container) {
   // only the outermost matching element per conversation (not its inner spans).
   const allEls = Array.from(container.querySelectorAll('*'));
   const rowCandidates = allEls.filter(el => {
+    // Skip the WhatsApp "account restricted" banner and anything inside it —
+    // shape-wise those elements can pass as rows but they are not conversations.
+    if (isSidebarNotice(el) || isInsideSidebarNotice(el, container)) return false;
     const r = el.getBoundingClientRect();
     if (!(r.height >= 50 && r.height <= 220 && r.width > 100 && r.left < half && r.left >= 0)) return false;
     const text = el.textContent.replace(/\s+/g, ' ').trim();
