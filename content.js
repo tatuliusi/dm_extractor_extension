@@ -1190,27 +1190,39 @@ function findConversationListContainer() {
 }
 
 /**
- * True if `el` is a sidebar warning/notice banner (e.g. WhatsApp's "account
- * restricted" panel) rather than a conversation row.
+ * True if `el` is a sidebar warning/notice/promo banner rather than a
+ * conversation row. Handled cases:
+ *   • WhatsApp "account restricted" panel (role=alert on restricted accounts)
+ *   • Messenger "Away until HH:MM" scheduling banner (shown when the operator
+ *     is on a scheduled away window — matches the row-shape heuristics and
+ *     without an explicit skip prevents the sidebar-scan from picking up any
+ *     conversation on those accounts)
+ *   • Messenger "Get an AI agent…" Business-Agent promo card
  *
- * On restricted WhatsApp accounts, MBS renders a ~180 px notice at the top of
- * the sidebar. Its shape (height, width, left) matches the conversation-row
- * heuristics, so without an explicit skip it was (a) getting picked as a
- * "row" by Strategies B/C and (b) inflating the header wrapper enough that
- * the "descend into tallest left-side child" fallback routed descent into
- * the header instead of the conversation list.
+ * These cards match the conversation-row shape (height, width, left) used by
+ * Strategies B/C, so without an explicit skip they either get picked as
+ * "rows" or inflate a header wrapper enough that the "descend into tallest
+ * left-side child" fallback routes descent away from the conversation list.
  *
  * Text-keyword matching is safe here because the check is only ever applied
  * to sidebar structure — never to message-bubble content — so a message that
- * happens to contain "Commerce Policy" cannot mis-fire this filter.
+ * happens to contain a matched phrase cannot mis-fire this filter. The
+ * phrases picked below are business-side jargon extremely unlikely to appear
+ * in a customer message preview.
  */
 function isSidebarNotice(el) {
   if (!el || !el.getAttribute) return false;
   const role = el.getAttribute('role');
-  if (role === 'alert' || role === 'alertdialog') return true;
+  if (role === 'alert' || role === 'alertdialog' || role === 'status') return true;
   const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
   if (!text) return false;
-  return /account restricted|commerce policy|business support home/i.test(text);
+  // "AI agent" is broad on purpose: Meta ships multiple wordings of the
+  // Business-Agent promo card ("Get an AI agent that responds…", "Get your
+  // own AI agent that can respond…") and only the phrase "AI agent" is
+  // stable across variants. Business-side jargon like this is extremely
+  // unlikely to appear in a customer message preview, and Strategy A does
+  // not consult this filter — real anchor-based rows can never be excluded.
+  return /account restricted|commerce policy|business support home|scheduled to be away|away messages will be sent|set status as available|\bai agent\b|business agent to respond/i.test(text);
 }
 
 /**

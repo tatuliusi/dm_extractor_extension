@@ -104,10 +104,10 @@ document.querySelectorAll('#list-wrapper .row').forEach((el, i) => {
 function isSidebarNotice(el) {
   if (!el || !el.getAttribute) return false;
   const role = el.getAttribute('role');
-  if (role === 'alert' || role === 'alertdialog') return true;
+  if (role === 'alert' || role === 'alertdialog' || role === 'status') return true;
   const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
   if (!text) return false;
-  return /account restricted|commerce policy|business support home/i.test(text);
+  return /account restricted|commerce policy|business support home|scheduled to be away|away messages will be sent|set status as available|\bai agent\b|business agent to respond/i.test(text);
 }
 
 function isInsideSidebarNotice(el, stopAt) {
@@ -239,9 +239,190 @@ const test3 = isSidebarNotice(banner) && !isSidebarNotice(row);
 console.log(test3 ? '✓ PASS' : `✗ FAIL (banner=${isSidebarNotice(banner)} row=${isSidebarNotice(row)})`);
 allPass = allPass && test3;
 
+// ─── Away scheduling banner + AI-agent promo card (Messenger) ──────────────
+// A separate DOM: sidebar with two Messenger promo/notice cards on top of a
+// list of anchor-based conversation rows. Regression for the case in the
+// screenshot where "Away until 09:00" + "Get an AI agent…" showed up in the
+// Messenger sidebar and the crawler logged "Reached end of conversation list"
+// with 0 downloads / 0 skipped / 0 errors because the promo cards were
+// polluting the row filter and the descent picked a wrapper without rows.
+
+const dom2 = new JSDOM(`<!DOCTYPE html>
+<html><body style="display:flex;width:1280px;height:800px">
+  <div id="sidebar2">
+    <div id="header2">
+      <div id="tabs2">Messenger</div>
+      <div id="filters2">All Priority Ad-replies Follow-up</div>
+    </div>
+
+    <!-- Away scheduling banner. In production it usually carries role="alert"
+         but we deliberately omit the role here to prove the text-pattern
+         branch catches it. -->
+    <div id="away-banner">
+      <strong>Away until 09:00</strong>
+      <p>You're scheduled to be away during this time. Away messages will be sent.</p>
+      <button>Set status as available</button>
+    </div>
+
+    <!-- Business-Agent promo card. Informational, uses role="status". -->
+    <div id="ai-banner" role="status">
+      <strong>Get an AI agent that responds to customers immediately</strong>
+      <p>There are a few people waiting for your response. Quickly set up Business Agent to respond for you.</p>
+      <button>Try it</button>
+    </div>
+
+    <!-- Real conversation list: three Messenger-style rows with
+         selected_item_id anchors (Strategy A's primary signal). -->
+    <div id="list-wrapper2">
+      <div class="row2">
+        <a href="/inbox/messages/?selected_item_id=100000001">
+          <strong>Salome Gvinianidze</strong>
+          <span>Hi there!</span>
+        </a>
+      </div>
+      <div class="row2">
+        <a href="/inbox/messages/?selected_item_id=100000002">
+          <strong>Sali Bakradze</strong>
+          <span>Thanks!</span>
+        </a>
+      </div>
+      <div class="row2">
+        <a href="/inbox/messages/?selected_item_id=100000003">
+          <strong>Lika M</strong>
+          <span>See you</span>
+        </a>
+      </div>
+    </div>
+  </div>
+</body></html>`, { pretendToBeVisual: true });
+
+const doc2 = dom2.window.document;
+
+const rects2 = {
+  '#sidebar2'      : { height: 800, width: 380, left: 0, top: 0   },
+  '#header2'       : { height: 90,  width: 380, left: 0, top: 0   },
+  '#away-banner'   : { height: 140, width: 380, left: 0, top: 90  }, // row-shape sized
+  '#ai-banner'     : { height: 170, width: 380, left: 0, top: 230 }, // row-shape sized
+  '#list-wrapper2' : { height: 300, width: 380, left: 0, top: 400 },
+};
+for (const [sel, r] of Object.entries(rects2)) {
+  const el = doc2.querySelector(sel);
+  el.getBoundingClientRect = () => ({
+    height: r.height, width: r.width,
+    left: r.left, right: r.left + r.width,
+    top: r.top, bottom: r.top + r.height,
+  });
+}
+doc2.querySelectorAll('#list-wrapper2 .row2').forEach((el, i) => {
+  el.getBoundingClientRect = () => ({
+    height: 90, width: 380,
+    left: 0, right: 380,
+    top: 400 + i * 90, bottom: 490 + i * 90,
+  });
+});
+
+// Use window from dom2 for its getComputedStyle / innerWidth
+const window2 = dom2.window;
+Object.defineProperty(window2, 'innerWidth',  { value: 1280, configurable: true });
+Object.defineProperty(window2, 'innerHeight', { value: 800,  configurable: true });
+
+// Wrap the Strategy helpers so they use window2 for viewport half-width.
+function makeStrategyB(win) {
+  return function (container) {
+    const half = win.innerWidth / 2;
+    let level = container;
+    for (let depth = 0; depth < 6; depth++) {
+      const children = Array.from(level.children);
+      const rows = children.filter(el => {
+        if (isSidebarNotice(el)) return false;
+        const r = el.getBoundingClientRect();
+        if (!(r.height >= 50 && r.height <= 220 && r.width > 80 && r.left < half && r.left >= 0)) return false;
+        const text = el.textContent.replace(/\s+/g, ' ').trim();
+        return text.length >= 4 && !/^[.…]+$/.test(text);
+      });
+      if (rows.length >= 2) {
+        const named = [];
+        for (const row of rows) {
+          const name = extractRowName(row);
+          if (!name) continue;
+          named.push({ name, row });
+        }
+        if (named.length > 0) return named;
+      }
+      if (children.length === 1) {
+        level = children[0];
+      } else if (children.length > 1) {
+        const eligible = children.filter(el => {
+          if (isSidebarNotice(el)) return false;
+          const r = el.getBoundingClientRect();
+          return r.left < half && r.height > 100 && r.width > 80;
+        });
+        const signalled = eligible.filter(hasConversationRowSignal);
+        const pool = signalled.length > 0 ? signalled : eligible;
+        const candidate = pool.sort((a, b) => b.getBoundingClientRect().height - a.getBoundingClientRect().height)[0];
+        if (candidate && candidate !== level) level = candidate;
+        else break;
+      } else break;
+    }
+    return [];
+  };
+}
+
+// Test 4: Away banner without role="alert" — caught by text pattern.
+console.log('\n=== Test 4: isSidebarNotice catches Away banner via text pattern ===');
+const awayBanner = doc2.getElementById('away-banner');
+const test4 = isSidebarNotice(awayBanner);
+console.log(test4 ? '✓ PASS' : '✗ FAIL — Away banner not recognized');
+allPass = allPass && test4;
+
+// Test 5: AI-agent promo card — caught by role="status" AND by text pattern.
+console.log('\n=== Test 5: isSidebarNotice catches AI-agent promo (role=status + text) ===');
+const aiBanner = doc2.getElementById('ai-banner');
+const test5 = isSidebarNotice(aiBanner);
+console.log(test5 ? '✓ PASS' : '✗ FAIL — AI-agent promo not recognized');
+allPass = allPass && test5;
+
+// Test 6: Strategy B on the mixed sidebar still finds all three real rows.
+console.log('\n=== Test 6: Strategy B skips both promo cards, finds all conversation rows ===');
+const strategyB2 = makeStrategyB(window2);
+const items2 = strategyB2(doc2.getElementById('sidebar2'));
+console.log(`Found ${items2.length} items:`);
+items2.forEach((it, i) => console.log(`  [${i}] "${it.name}"`));
+const expected2 = ['Salome Gvinianidze', 'Sali Bakradze', 'Lika M'];
+const t6a = items2.length === 3;
+const t6b = expected2.every(n => items2.some(it => it.name === n));
+const t6c = !items2.some(it => /away until|ai agent|business agent/i.test(it.name));
+const test6 = t6a && t6b && t6c;
+console.log(test6 ? '✓ PASS' : `✗ FAIL (count=${t6a} names=${t6b} noBanners=${t6c})`);
+allPass = allPass && test6;
+
+// Test 7: real conversation-preview text that contains innocuous words should
+// NOT be mistaken for a banner (guard against false positives).
+console.log('\n=== Test 7: no false positive on regular conversation row text ===');
+const normalRow = doc2.createElement('div');
+normalRow.innerHTML = '<strong>Nino K</strong><span>Sure, I can be available tomorrow — let me know what time works</span>';
+const test7 = !isSidebarNotice(normalRow);
+console.log(test7 ? '✓ PASS' : '✗ FAIL — banner filter false-positive on regular message text');
+allPass = allPass && test7;
+
+// Test 8: alternate wording of the AI-agent promo card ("Get your own AI
+// agent that can respond to customers"). Meta ships multiple A/B variants
+// of this card so the detection must catch the stable phrase "AI agent"
+// rather than any one specific sentence.
+console.log('\n=== Test 8: AI-agent promo — alternate wording variant ===');
+const aiBannerV2 = doc2.createElement('div');
+aiBannerV2.innerHTML = `
+  <span aria-hidden="true">☆</span>
+  <strong>Get your own AI agent that can respond to customers</strong>
+  <a href="#">მეტის ნახვა</a>
+  <button aria-label="Close">×</button>`;
+const test8 = isSidebarNotice(aiBannerV2);
+console.log(test8 ? '✓ PASS' : '✗ FAIL — alternate AI-agent card not recognized');
+allPass = allPass && test8;
+
 // ─── Summary ───────────────────────────────────────────────────────────────
 
 console.log('\n=== Summary ===');
-console.log(allPass ? '✓ All tests passed — restriction banner is correctly skipped'
+console.log(allPass ? '✓ All tests passed — sidebar notice/promo banners are correctly skipped'
                     : '✗ Some tests failed');
 process.exit(allPass ? 0 : 1);
