@@ -139,7 +139,9 @@ const GEORGIAN_WEEKDAYS = {
  */
 function parseDateLabel(label) {
   if (!label) return null;
-  const raw = label.trim();
+  // Strip Unicode directional / format marks that Meta injects around bidi text.
+  // Without this, "კვ.‎" (LTR mark) and similar variants miss the lookup table.
+  const raw = label.replace(/[​-‏؜⁦-⁩‪-‮﻿]/g, '').trim();
   const lower = raw.toLowerCase();
 
   const today = new Date();

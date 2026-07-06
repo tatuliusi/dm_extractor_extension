@@ -1089,14 +1089,16 @@ async function runCrawl(fromDate, toDate) {
         // empty is a scroll artifact (virtual scroll may have evicted newest messages).
         // Do NOT increment consecutiveTooOld — we're still inside the target date band.
         consecutiveTooOld = 0;
+      } else if (rowDate === null) {
+        // Row date was unparseable, so we can't cross-check filterByDateRange's
+        // verdict. Message-side "tooOld" here can be a false positive: e.g. a
+        // reaction on an old message shows recent activity in the sidebar
+        // preview but leaves the thread's newest parseable date on an old
+        // message. Skip this conversation but don't advance the early-stop
+        // counter — a genuinely out-of-range row with a parseable weekday/date
+        // will still trigger early-stop via path A at line 992.
       } else if (tooOld) {
         consecutiveTooOld++;
-        // Only stop early once we've confirmed we're past the in-range window:
-        // either we already downloaded some in-range conversations, or we've
-        // seen too-new conversations (meaning we passed through the target
-        // date band without finding anything). Without this guard a few pinned
-        // or unread-first conversations from before fromDate at the top of the
-        // list would fire the stop before the target range is ever reached.
         if (consecutiveTooOld >= MAX_CONSECUTIVE_TOO_OLD && (seenTooNew || _stats.downloaded > 0)) {
           log('info', `Stopped early: ${MAX_CONSECUTIVE_TOO_OLD} consecutive conversations older than start date.`);
           break;
@@ -1438,16 +1440,51 @@ function extractRowDate(row) {
   if (!rect.width) return null;
   const rightBoundary = rect.left + rect.width * 0.55; // right 45% of the row
 
-  for (const el of row.querySelectorAll('span,div')) {
-    if (el.children.length > 0) continue; // leaf nodes only
+  const inRightRegion = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width && r.height && r.left >= rightBoundary;
+  };
+
+  // Pass 1: leaf span/div/time in the right portion.
+  for (const el of row.querySelectorAll('span,div,time')) {
+    if (el.children.length > 0) continue;
     const text = cleanText(el);
     if (!text || text.length > 20) continue;
-    const r = el.getBoundingClientRect();
-    if (!r.width || !r.height) continue;
-    if (r.left < rightBoundary) continue; // must be in the right portion
+    if (!inRightRegion(el)) continue;
     const d = parseDateLabel(text);
     if (d) return d;
   }
+
+  // Pass 2: aria-label / title / datetime on any element in the right portion.
+  // Meta accessibility labels often carry a full weekday/date even when the
+  // visible text is a short glyph that fails Pass 1's leaf check.
+  for (const el of row.querySelectorAll('[aria-label],[title],[datetime]')) {
+    if (!inRightRegion(el)) continue;
+    const label = el.getAttribute('datetime')
+               || el.getAttribute('aria-label')
+               || el.getAttribute('title');
+    if (!label) continue;
+    const trimmed = label.trim();
+    if (!trimmed || trimmed.length > 60) continue;
+    const d = parseDateLabel(trimmed);
+    if (d) return d;
+  }
+
+  // Pass 3: own-text of any element (text nodes only, ignoring descendant text).
+  // Handles wrappers that carry the date as a text node next to a decorative
+  // child — the "children.length > 0" check in Pass 1 would skip those.
+  for (const el of row.querySelectorAll('*')) {
+    if (!inRightRegion(el)) continue;
+    let directText = '';
+    for (const child of el.childNodes) {
+      if (child.nodeType === 3) directText += child.textContent;
+    }
+    directText = directText.replace(/\s+/g, ' ').trim();
+    if (!directText || directText.length > 20) continue;
+    const d = parseDateLabel(directText);
+    if (d) return d;
+  }
+
   return null;
 }
 
