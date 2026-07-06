@@ -60,6 +60,9 @@ function setupBridge() {
     onDone     : null,
     appendLog  : null,  // filled in by panel.js
 
+    // Single-conversation download (used by the "Current" panel button)
+    downloadCurrent: downloadCurrent,
+
     // DevTools shortcut — extract current open conversation
     extract    : extract,
     download   : download,
@@ -920,6 +923,62 @@ function waitIfPaused() {
   return new Promise(resolve => { _pauseResolve = resolve; });
 }
 
+/**
+ * Extract and download the currently-open conversation as a single JSON file,
+ * bypassing the sidebar-crawler and date filter. Produces the same output
+ * schema as the batch path so downstream consumers work unchanged.
+ * @param {{ from?: string, to?: string }} [opts]  optional ISO date strings
+ *   from the panel; recorded in filter_from/filter_to for provenance only —
+ *   messages are NOT filtered by these dates.
+ */
+async function downloadCurrent({ from, to } = {}) {
+  if (_state === 'running') {
+    log('err', 'Cannot download current conversation while a batch is running.');
+    return;
+  }
+
+  log('info', 'Downloading currently-open conversation…');
+
+  try {
+    await waitForElement('[aria-label*="Message list container" i]', 5000);
+  } catch {
+    log('err', 'No conversation open. Click a conversation in the sidebar first.');
+    return;
+  }
+
+  await waitForCountStable(
+    '[data-message-id],[data-mid],[data-msgid],[data-focusable-id],[data-item-id]',
+    { timeout: 3000, interval: 200, stableRounds: 2 }
+  );
+
+  await scrollThreadToLoadAll();
+
+  let data;
+  try { data = extract(); }
+  catch (err) {
+    log('err', `extract() threw: ${err.message}`);
+    return;
+  }
+
+  if (!data || data.error) {
+    log('err', `Extraction failed: ${data ? data.error : 'null'}`);
+    return;
+  }
+
+  const output = {
+    ...data,
+    filter_from: from || null,
+    filter_to  : to   || null,
+  };
+
+  try {
+    await download(output);
+    log('ok', `Downloaded (${output.count} msgs): ${output.customer_name || output.thread || 'current conversation'}`);
+  } catch (err) {
+    log('err', `Download failed: ${err && err.message}`);
+  }
+}
+
 // ─── Main crawl loop ─────────────────────────────────────────────────────
 
 async function runCrawl(fromDate, toDate) {
@@ -1080,14 +1139,25 @@ async function runCrawl(fromDate, toDate) {
 
     const { filtered, filteredMessages, tooOld, hasEvidence } = filterByDateRange(data.messages, fromDate, toDate);
 
-    if (filteredMessages.length === 0) {
+    // If the sidebar row confirmed in-range but the message-side filter returned
+    // empty, trust the sidebar and download the full conversation. This handles
+    // the reaction-on-old-message case: the sidebar shows recent activity
+    // (Meta counts reactions as activity) but the thread has no new date
+    // divider for the reaction, so the newest parseable message date sits on
+    // the older reacted-to message and filterByDateRange marks it "too old".
+    let effectiveMessages = filteredMessages;
+    if (filteredMessages.length === 0 && rowInRange && data.messages.length > 0) {
+      log('info', `Row in range; downloading full conversation despite older message dates: ${item.name || item.id}`);
+      effectiveMessages = data.messages;
+    }
+
+    if (effectiveMessages.length === 0) {
       log('skip', `No messages in range: ${item.name || item.id}`);
       _stats.skipped++;
       emitProgress({ inbox: detectInboxType() });
       if (rowInRange) {
-        // Pre-filter confirmed this conversation is in range; filterByDateRange returning
-        // empty is a scroll artifact (virtual scroll may have evicted newest messages).
-        // Do NOT increment consecutiveTooOld — we're still inside the target date band.
+        // Row was in range but the conversation genuinely has no messages
+        // (extract returned empty). Don't advance the early-stop counter.
         consecutiveTooOld = 0;
       } else if (rowDate === null) {
         // Row date was unparseable, so we can't cross-check filterByDateRange's
@@ -1119,8 +1189,8 @@ async function runCrawl(fromDate, toDate) {
 
     const output = {
       ...data,
-      messages   : filteredMessages,
-      count      : filteredMessages.length,
+      messages   : effectiveMessages,
+      count      : effectiveMessages.length,
       filter_from: localDateStr(fromDate),
       filter_to  : localDateStr(toDate),
     };
@@ -1136,7 +1206,7 @@ async function runCrawl(fromDate, toDate) {
     }
 
     if (downloaded) {
-      log('ok', `Downloaded (${filteredMessages.length} msgs): ${item.name || item.id}`);
+      log('ok', `Downloaded (${effectiveMessages.length} msgs): ${item.name || item.id}`);
       _stats.downloaded++;
     } else {
       log('err', `Download failed after retry: ${item.name || item.id} — ${lastDlErr && lastDlErr.message}`);

@@ -27,6 +27,7 @@
   const startBtn     = document.getElementById('dm-start-btn');
   const pauseBtn     = document.getElementById('dm-pause-btn');
   const stopBtn      = document.getElementById('dm-stop-btn');
+  const dlCurrentBtn = document.getElementById('dm-download-current-btn');
   const progressBar  = document.getElementById('dm-progress-bar');
   const statusInbox  = document.getElementById('dm-status-inbox');
   const statusConv   = document.getElementById('dm-status-conv');
@@ -110,6 +111,19 @@
     setButtons('idle');
   });
 
+  dlCurrentBtn.addEventListener('click', async () => {
+    if (!bridge.downloadCurrent) {
+      appendLog('Download current not available.', 'err');
+      return;
+    }
+    dlCurrentBtn.disabled = true;
+    try {
+      await bridge.downloadCurrent({ from: fromInput.value, to: toInput.value });
+    } finally {
+      dlCurrentBtn.disabled = false;
+    }
+  });
+
   // ─── Bridge callbacks (called by content.js) ─────────────────────────────
 
   bridge.onProgress = function (info) {
@@ -156,6 +170,7 @@
       pauseBtn.textContent = '⏸ Pause';
       fromInput.disabled = false;
       toInput.disabled   = false;
+      if (dlCurrentBtn) dlCurrentBtn.disabled = false;
     } else if (state === 'running') {
       startBtn.disabled = true;
       pauseBtn.disabled = false;
@@ -163,11 +178,13 @@
       pauseBtn.textContent = '⏸ Pause';
       fromInput.disabled = true;
       toInput.disabled   = true;
+      if (dlCurrentBtn) dlCurrentBtn.disabled = true;
     } else if (state === 'paused') {
       startBtn.disabled = true;
       pauseBtn.disabled = false;
       stopBtn.disabled  = false;
       pauseBtn.textContent = '▶ Resume';
+      if (dlCurrentBtn) dlCurrentBtn.disabled = true;
     }
   }
 
