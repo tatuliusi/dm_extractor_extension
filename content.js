@@ -245,6 +245,16 @@ function initPanelUI(shadow) {
     setButtons('idle');
   });
 
+  // ── Download current conversation button ────────────────────────────────
+  const downloadCurrentBtn = $('dm-download-current-btn');
+  if (downloadCurrentBtn) {
+    downloadCurrentBtn.addEventListener('click', () => {
+      const from = fromInput.value;
+      const to   = toInput.value;
+      _bridge.downloadCurrent({ from, to });
+    });
+  }
+
   // ── Bridge callbacks ─────────────────────────────────────────────────────
   _bridge.onProgress = info => {
     statusInbox.innerHTML = 'Inbox: <span class="dm-inbox-label">' +
