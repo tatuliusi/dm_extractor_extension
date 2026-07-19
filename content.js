@@ -462,6 +462,85 @@ function containsEmoji(text) {
 }
 
 /**
+ * When Meta groups multiple consecutive same-sender bubbles under a single
+ * `data-message-id` container, `bubbleText()` concatenates all bubble text
+ * into one string, collapsing distinct chat bubbles into a single message
+ * entry. This helper detects the sub-bubble boundaries inside such a node
+ * and returns per-bubble `{ text, direction, node }` records.
+ *
+ * Detection order:
+ *   1. Direction-classed wrappers (`.x1nhvcw1` inbound, `.x13a6bvl` outbound)
+ *      — MBS's most reliable per-bubble marker.
+ *   2. Outermost `[dir="auto"]` text blocks — fallback when direction classes
+ *      don't segment (WEC / obfuscated redeploys). Filters out receipt/
+ *      timestamp-only text so a single bubble with a "Seen 3:45 PM" sibling
+ *      does not falsely split.
+ *
+ * Returns `[]` when only one bubble is detected — callers fall back to the
+ * existing single-message capture.
+ */
+function splitIntoBubbles(node) {
+  const RECEIPT_ONLY = /^(?:\d{1,2}:\d{2}(?:\s*(?:am|pm))?|seen|delivered|sent|read)$/i;
+
+  const wrappers = Array.from(node.querySelectorAll('.x1nhvcw1, .x13a6bvl'));
+  const outerWrappers = wrappers.filter(w =>
+    !wrappers.some(other => other !== w && other.contains(w))
+  );
+  if (outerWrappers.length >= 2) {
+    const bubbles = [];
+    const seenTexts = new Set();
+    for (const w of outerWrappers) {
+      const text = bubbleText(w);
+      if (!text) continue;
+      if (seenTexts.has(text)) continue;
+      seenTexts.add(text);
+      const direction = w.classList.contains('x1nhvcw1') ? 'inbound' :
+                        w.classList.contains('x13a6bvl') ? 'outbound' : null;
+      bubbles.push({ text, direction, node: w });
+    }
+    if (bubbles.length >= 2) return bubbles;
+  }
+
+  // When a single direction wrapper groups multiple bubbles, look inside it
+  // for dir="auto" sub-bubbles (Meta often wraps all sent messages in one
+  // .x13a6bvl container with individual dir="auto" children per bubble).
+  const searchRoot = outerWrappers.length === 1 ? outerWrappers[0] : node;
+  const singleWrapperDir = outerWrappers.length === 1
+    ? (outerWrappers[0].classList.contains('x1nhvcw1') ? 'inbound' :
+       outerWrappers[0].classList.contains('x13a6bvl') ? 'outbound' : null)
+    : null;
+
+  // Meta timestamps/receipts often live in their own [dir="auto"] element.
+  // Skip short strings that are just a clock time or a receipt keyword so a
+  // single-text bubble with an adjacent timestamp doesn't get treated as two.
+  const dirAutoNodes = Array.from(searchRoot.querySelectorAll('[dir="auto"]'))
+    .filter(el => !el.closest('[aria-hidden="true"]'))
+    .filter(el => !el.closest('[role="button"]'))
+    .filter(el => !el.closest('[data-testid="message_delivery_receipt"]'));
+  // Use leaf-level dir="auto" nodes (those that don't contain other dir="auto"
+  // nodes in the set). This handles both flat sibling layouts and nested
+  // structures where an outer dir="auto" wraps individual bubble dir="auto"s.
+  const leafDirAuto = dirAutoNodes.filter(el =>
+    !dirAutoNodes.some(other => other !== el && el.contains(other))
+  );
+  if (leafDirAuto.length >= 2) {
+    const bubbles = [];
+    const seenTexts = new Set();
+    for (const el of leafDirAuto) {
+      const text = bubbleText(el);
+      if (!text) continue;
+      if (text.length <= 12 && RECEIPT_ONLY.test(text)) continue;
+      if (seenTexts.has(text)) continue;
+      seenTexts.add(text);
+      bubbles.push({ text, direction: singleWrapperDir, node: el });
+    }
+    if (bubbles.length >= 2) return bubbles;
+  }
+
+  return [];
+}
+
+/**
  * Extract clean text from a message bubble.
  * Clones the element, materialises image-based emojis/stickers into text,
  * strips visually-hidden spans (but preserves ones carrying emoji unicode),
@@ -635,31 +714,53 @@ function extract() {
     // ── Operator assignment / system activity event ──────────────────────
     // These appear as centered text (e.g. "John was assigned to this conversation")
     // with no data-message-id. Meta uses role="note" for activity notes in MBS.
+    //
+    // Guardrails against swallowing real bubbles into one merged sys_ entry:
+    //   (a) skip if the node encloses real message-id/group-id descendants —
+    //       it's a mislabeled wrapper, not an activity note;
+    //   (b) skip if the collected text is much longer than any plausible
+    //       activity line (assignment/reassignment/etc. are one-liners).
+    // Both cases fall through so the enclosed bubbles get captured (and
+    // split) individually by the message-bubble branch below.
     {
       const role = node.getAttribute('role');
       const testId = (node.getAttribute('data-testid') || '').toLowerCase();
-      if (
+      const looksLikeSystem =
         role === 'note' ||
         role === 'status' ||
         testId.includes('activity') ||
         testId.includes('event_log') ||
-        testId.includes('assignment')
-      ) {
-        const text = bubbleText(node);
-        if (text) {
-          const dedupeKey = 'sys:' + text.slice(0, 80);
-          if (!seenMsgIds.has(dedupeKey)) {
-            seenMsgIds.add(dedupeKey);
-            messages.push({
-              id        : 'sys_' + messages.length,
-              date      : currentDate,
-              direction : 'system',
-              text,
-              type      : 'system_event',
-            });
+        testId.includes('assignment');
+      if (looksLikeSystem) {
+        // A real activity note has no message/group ID on itself and no bubble
+        // structure inside. Anything else is a mislabeled wrapper.
+        const selfHasMsgId =
+          node.hasAttribute('data-message-id') ||
+          node.hasAttribute('data-mid') ||
+          node.hasAttribute('data-msgid') ||
+          node.hasAttribute('data-focusable-id') ||
+          node.hasAttribute('data-item-id');
+        const wrapsRealMessages = selfHasMsgId || !!node.querySelector(
+          '[data-message-id],[data-mid],[data-msgid],[data-focusable-id],[data-item-id]'
+        );
+        if (!wrapsRealMessages) {
+          const text = bubbleText(node);
+          if (text && text.length <= 240) {
+            const dedupeKey = 'sys:' + text.slice(0, 80);
+            if (!seenMsgIds.has(dedupeKey)) {
+              seenMsgIds.add(dedupeKey);
+              messages.push({
+                id        : 'sys_' + messages.length,
+                date      : currentDate,
+                direction : 'system',
+                text,
+                type      : 'system_event',
+              });
+            }
+            continue;
           }
         }
-        continue;
+        // Mislabeled wrapper or overlong text: don't treat as system event.
       }
     }
 
@@ -686,9 +787,6 @@ function extract() {
     if (seenMsgIds.has(msgId)) continue;
     seenMsgIds.add(msgId);
 
-    const text = bubbleText(node);
-    if (!text) continue; // skip empty / media-only for now
-
     const direction = nearestDirection(node, region);
 
     // Seen / delivered receipt — small sub-text under the bubble
@@ -697,6 +795,38 @@ function extract() {
                       node.querySelector('[aria-label*="Seen" i]') ||
                       node.querySelector('[aria-label*="Delivered" i]');
     if (receiptEl) receipt = receiptEl.getAttribute('aria-label') || receiptEl.textContent.trim();
+
+    // Meta occasionally groups multiple consecutive same-sender bubbles under a
+    // single data-message-id. Split them back into individual entries so each
+    // chat bubble remains its own message in the output. Skip when descendants
+    // already carry their own message-ids — the walker will visit and emit
+    // those individually, so splitting here would double-emit.
+    const hasInnerMessageIds = !!node.querySelector('[data-message-id],[data-mid],[data-msgid]');
+    const subBubbles = hasInnerMessageIds ? [] : splitIntoBubbles(node);
+    if (subBubbles.length >= 2) {
+      subBubbles.forEach((sub, i) => {
+        // Mark any inner message-ids as seen so the walker doesn't re-emit them
+        // when it descends into these sub-bubble nodes.
+        if (sub.node && sub.node.getAttribute) {
+          const innerId = sub.node.getAttribute('data-message-id') ||
+                          sub.node.getAttribute('data-mid') ||
+                          sub.node.getAttribute('data-msgid');
+          if (innerId) seenMsgIds.add(innerId);
+        }
+        messages.push({
+          id        : `${msgId}#${i}`,
+          date      : currentDate,
+          direction : sub.direction || direction,
+          text      : sub.text,
+          receipt   : (i === subBubbles.length - 1 && receipt) ? receipt : undefined,
+          type      : 'text',
+        });
+      });
+      continue;
+    }
+
+    const text = bubbleText(node);
+    if (!text) continue; // skip empty / media-only for now
 
     messages.push({
       id        : msgId,
