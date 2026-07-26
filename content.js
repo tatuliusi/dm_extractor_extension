@@ -541,10 +541,45 @@ function splitIntoBubbles(node) {
 }
 
 /**
+ * Walk a DOM subtree and collect text, inserting '\n' at block-element
+ * boundaries and for <br> tags. Mirrors what innerText would produce on a
+ * rendered element, but works on detached clones.
+ */
+const BLOCK_TAGS = new Set([
+  'DIV', 'P', 'BR', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+  'LI', 'TR', 'BLOCKQUOTE', 'PRE', 'HR', 'UL', 'OL',
+]);
+
+function extractTextWithNewlines(root) {
+  const parts = [];
+  (function walk(node) {
+    if (node.nodeType === 3 /* TEXT */) {
+      parts.push(node.textContent);
+      return;
+    }
+    if (node.nodeType !== 1 /* ELEMENT */) return;
+    if (node.tagName === 'BR') { parts.push('\n'); return; }
+
+    const isBlock = BLOCK_TAGS.has(node.tagName);
+    if (isBlock && parts.length > 0) {
+      const last = parts[parts.length - 1];
+      if (last && !last.endsWith('\n')) parts.push('\n');
+    }
+    for (const child of node.childNodes) walk(child);
+    if (isBlock && parts.length > 0) {
+      const last = parts[parts.length - 1];
+      if (last && !last.endsWith('\n')) parts.push('\n');
+    }
+  })(root);
+  return parts.join('').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
  * Extract clean text from a message bubble.
  * Clones the element, materialises image-based emojis/stickers into text,
- * strips visually-hidden spans (but preserves ones carrying emoji unicode),
- * and returns trimmed text content.
+ * materialises <a href> URLs so links are never lost, strips visually-hidden
+ * spans (but preserves ones carrying emoji unicode), and returns text with
+ * line breaks preserved.
  *
  * Meta renders emojis and stickers as <img alt="😊"> across Instagram,
  * Messenger, and WhatsApp Business (WEC). textContent skips <img> entirely,
@@ -564,6 +599,22 @@ function bubbleText(bubble) {
              || img.getAttribute('title')
              || '';
     if (alt) img.replaceWith(doc.createTextNode(alt));
+  });
+
+  // 1b. Materialise <a href> URLs into text so links are preserved in the
+  //     output. Runs before the aria-hidden strip because Meta sometimes
+  //     wraps URL text spans in aria-hidden containers.
+  clone.querySelectorAll('a[href]').forEach(a => {
+    const href = a.getAttribute('href') || '';
+    if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+    const text = a.textContent.trim();
+    if (text && text !== href && !text.startsWith('http')) {
+      a.replaceWith(doc.createTextNode(`${text} (${href})`));
+    } else if (!text) {
+      a.replaceWith(doc.createTextNode(href));
+    } else {
+      a.replaceWith(doc.createTextNode(text));
+    }
   });
 
   // 2. Materialise role="img" wrappers with no visible text (Instagram/Facebook
@@ -589,7 +640,7 @@ function bubbleText(bubble) {
     n.remove();
   });
 
-  return clone.textContent.trim();
+  return extractTextWithNewlines(clone);
 }
 
 /**
