@@ -847,13 +847,15 @@ function extract() {
                       node.querySelector('[aria-label*="Delivered" i]');
     if (receiptEl) receipt = receiptEl.getAttribute('aria-label') || receiptEl.textContent.trim();
 
+    // If this node contains descendants with their own message-ids, skip it
+    // entirely — the walker will visit and emit those individually.
+    const hasInnerMessageIds = !!node.querySelector('[data-message-id],[data-mid],[data-msgid]');
+    if (hasInnerMessageIds) continue;
+
     // Meta occasionally groups multiple consecutive same-sender bubbles under a
     // single data-message-id. Split them back into individual entries so each
-    // chat bubble remains its own message in the output. Skip when descendants
-    // already carry their own message-ids — the walker will visit and emit
-    // those individually, so splitting here would double-emit.
-    const hasInnerMessageIds = !!node.querySelector('[data-message-id],[data-mid],[data-msgid]');
-    const subBubbles = hasInnerMessageIds ? [] : splitIntoBubbles(node);
+    // chat bubble remains its own message in the output.
+    const subBubbles = splitIntoBubbles(node);
     if (subBubbles.length >= 2) {
       subBubbles.forEach((sub, i) => {
         // Mark any inner message-ids as seen so the walker doesn't re-emit them
@@ -893,6 +895,8 @@ function extract() {
   // Some Meta deploys render activity notes without role="note". This pass
   // catches them via a positional heuristic: visible, short-text elements that
   // are horizontally centered in the thread with no bubble-direction ancestry.
+  const MSG_ID_SEL = '[data-message-id],[data-mid],[data-msgid],[data-focusable-id],[data-item-id]';
+  const msgTextSet = new Set(messages.filter(m => m.type !== 'system_event').map(m => m.text));
   {
     const regionRect = region.getBoundingClientRect();
     const candidates = [];
@@ -907,6 +911,10 @@ function extract() {
       const gid = secNode.getAttribute('data-focusable-id') ||
                   secNode.getAttribute('data-item-id');
       if (pid || gid) continue;
+
+      // Skip nodes inside or wrapping message-ID elements — they're part of
+      // regular message bubbles, not standalone activity notes.
+      if (secNode.closest(MSG_ID_SEL) || secNode.querySelector(MSG_ID_SEL)) continue;
 
       // Skip date separators and already-handled roles
       const role = secNode.getAttribute('role');
@@ -952,6 +960,11 @@ function extract() {
       if (!text) continue;
       const dedupeKey = 'sys:' + text.slice(0, 80);
       if (seenMsgIds.has(dedupeKey)) continue;
+      // Skip text that matches or contains an already-captured message
+      if (msgTextSet.has(text)) continue;
+      let overlaps = false;
+      for (const mt of msgTextSet) { if (text.includes(mt)) { overlaps = true; break; } }
+      if (overlaps) continue;
       seenMsgIds.add(dedupeKey);
       messages.push({
         id        : 'sys_' + messages.length,
