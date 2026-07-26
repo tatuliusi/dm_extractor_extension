@@ -1036,7 +1036,17 @@ function extract() {
  * a real subfolder under Downloads. Multiple tabs each read their own URL,
  * so they naturally produce separate folders and their files never mix.
  */
+function extensionContextValid() {
+  try { return !!chrome.runtime?.id; } catch { return false; }
+}
+
 function download(data) {
+  if (!extensionContextValid()) {
+    const err = new Error('Extension context invalidated. Please refresh the page (F5) and try again.');
+    err.contextDead = true;
+    return Promise.reject(err);
+  }
+
   const name      = (data.customer_name || data.thread || 'unknown')
     .replace(/[^a-zA-Z0-9_-]/g, '_')
     .slice(0, 60);
@@ -1083,6 +1093,10 @@ function localDateStr(d) {
  */
 async function startCrawler({ from, to }) {
   if (_state === 'running') return;
+  if (!extensionContextValid()) {
+    log('err', 'Extension context lost. Please refresh the page (F5) and try again.');
+    return;
+  }
 
   _state      = 'running';
   _stopSignal = false;
@@ -1138,6 +1152,10 @@ function waitIfPaused() {
 async function downloadCurrent({ from, to } = {}) {
   if (_state === 'running') {
     log('err', 'Cannot download current conversation while a batch is running.');
+    return;
+  }
+  if (!extensionContextValid()) {
+    log('err', 'Extension context lost. Please refresh the page (F5) and try again.');
     return;
   }
 
@@ -1405,6 +1423,7 @@ async function runCrawl(fromDate, toDate) {
       try { await download(output); downloaded = true; break; }
       catch (err) {
         lastDlErr = err;
+        if (err.contextDead) break;
         if (attempt === 0) { log('err', 'Download failed, retrying…'); await sleep(500); }
       }
     }
@@ -1415,6 +1434,10 @@ async function runCrawl(fromDate, toDate) {
     } else {
       log('err', `Download failed after retry: ${item.name || item.id} — ${lastDlErr && lastDlErr.message}`);
       _stats.errors++;
+      if (lastDlErr && lastDlErr.contextDead) {
+        log('err', 'Extension context lost — stopping. Refresh the page (F5) and re-run.');
+        break;
+      }
     }
 
     emitProgress({ inbox: detectInboxType() });
