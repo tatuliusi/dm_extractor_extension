@@ -30,12 +30,49 @@ function containsEmoji(text) {
   return /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{200D}\u{2700}-\u{27BF}]/u.test(text);
 }
 
+const BLOCK_TAGS = new Set([
+  'DIV', 'P', 'BR', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+  'LI', 'TR', 'BLOCKQUOTE', 'PRE', 'HR', 'UL', 'OL',
+]);
+
+function extractTextWithNewlines(root) {
+  const parts = [];
+  (function walk(node) {
+    if (node.nodeType === 3) { parts.push(node.textContent); return; }
+    if (node.nodeType !== 1) return;
+    if (node.tagName === 'BR') { parts.push('\n'); return; }
+    const isBlock = BLOCK_TAGS.has(node.tagName);
+    if (isBlock && parts.length > 0) {
+      const last = parts[parts.length - 1];
+      if (last && !last.endsWith('\n')) parts.push('\n');
+    }
+    for (const child of node.childNodes) walk(child);
+    if (isBlock && parts.length > 0) {
+      const last = parts[parts.length - 1];
+      if (last && !last.endsWith('\n')) parts.push('\n');
+    }
+  })(root);
+  return parts.join('').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function bubbleText(bubble) {
   const clone = bubble.cloneNode(true);
   const doc = clone.ownerDocument || bubble.ownerDocument;
   clone.querySelectorAll('img').forEach(img => {
     const alt = img.getAttribute('alt') || img.getAttribute('aria-label') || img.getAttribute('title') || '';
     if (alt) img.replaceWith(doc.createTextNode(alt));
+  });
+  clone.querySelectorAll('a[href]').forEach(a => {
+    const href = a.getAttribute('href') || '';
+    if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+    const text = a.textContent.trim();
+    if (text && text !== href && !text.startsWith('http')) {
+      a.replaceWith(doc.createTextNode(`${text} (${href})`));
+    } else if (!text) {
+      a.replaceWith(doc.createTextNode(href));
+    } else {
+      a.replaceWith(doc.createTextNode(text));
+    }
   });
   clone.querySelectorAll('[role="img"]').forEach(el => {
     if (el.textContent.trim()) return;
@@ -48,7 +85,7 @@ function bubbleText(bubble) {
     if (containsEmoji(n.textContent)) return;
     n.remove();
   });
-  return clone.textContent.trim();
+  return extractTextWithNewlines(clone);
 }
 
 function splitIntoBubbles(node) {
@@ -290,7 +327,8 @@ function runWalker(region) {
     seenMsgIds.add(msgId);
 
     const hasInnerMessageIds = !!node.querySelector('[data-message-id],[data-mid],[data-msgid]');
-    const subBubbles = hasInnerMessageIds ? [] : splitIntoBubbles(node);
+    if (hasInnerMessageIds) continue;
+    const subBubbles = splitIntoBubbles(node);
     if (subBubbles.length >= 2) {
       subBubbles.forEach((sub, i) => {
         if (sub.node && sub.node.getAttribute) {
@@ -361,6 +399,73 @@ console.log('\n=== Test 9: role="status" wrapper with overlong text falls throug
   // gets captured as a single text message (not a system_event).
   assert(msgs.length === 1, `expected 1 entry, got ${msgs.length}`);
   assert(msgs[0] && msgs[0].type === 'text', `overlong content should not be system_event, got ${msgs[0] && msgs[0].type}`);
+}
+
+// ─── Test 10: outer container with inner data-message-ids is skipped ────────
+console.log('\n=== Test 10: outer data-message-id with inner message-ids is skipped ===');
+{
+  const dom = new JSDOM(`
+    <div id="region4">
+      <div data-message-id="outer_group">
+        <div data-message-id="inner_1" class="x1nhvcw1"><div dir="auto">First message</div></div>
+        <div data-message-id="inner_2" class="x1nhvcw1"><div dir="auto">Second message</div></div>
+        <div data-message-id="inner_3" class="x1nhvcw1"><div dir="auto">Third message</div></div>
+      </div>
+    </div>
+  `);
+  const region = dom.window.document.getElementById('region4');
+  const msgs = runWalker(region);
+  assert(msgs.length === 3, `expected 3 individual entries, got ${msgs.length}`);
+  assert(!msgs.some(m => m.id === 'outer_group'), 'outer group should not appear as its own entry');
+  assert(msgs[0] && msgs[0].text === 'First message', 'inner entry 0 text');
+  assert(msgs[1] && msgs[1].text === 'Second message', 'inner entry 1 text');
+  assert(msgs[2] && msgs[2].text === 'Third message', 'inner entry 2 text');
+}
+
+// ─── Test 11: bubbleText preserves <br> line breaks ─────────────────────────
+console.log('\n=== Test 11: bubbleText preserves line breaks from <br> ===');
+{
+  const dom = new JSDOM(`<div id="lb">line one<br>line two<br>line three</div>`);
+  const node = dom.window.document.getElementById('lb');
+  const text = bubbleText(node);
+  assert(text === 'line one\nline two\nline three', `expected newlines, got: ${JSON.stringify(text)}`);
+}
+
+// ─── Test 12: bubbleText preserves block-element line breaks ────────────────
+console.log('\n=== Test 12: bubbleText preserves div-based line breaks ===');
+{
+  const dom = new JSDOM(`<div id="db"><div>paragraph one</div><div>paragraph two</div></div>`);
+  const node = dom.window.document.getElementById('db');
+  const text = bubbleText(node);
+  assert(text === 'paragraph one\nparagraph two', `expected newlines between divs, got: ${JSON.stringify(text)}`);
+}
+
+// ─── Test 13: bubbleText extracts link URLs ─────────────────────────────────
+console.log('\n=== Test 13: bubbleText extracts link URLs ===');
+{
+  const dom = new JSDOM(`<div id="lk1"><a href="https://example.com">https://example.com</a></div>`);
+  const text1 = bubbleText(dom.window.document.getElementById('lk1'));
+  assert(text1 === 'https://example.com', `URL-as-text link preserved: ${JSON.stringify(text1)}`);
+
+  const dom2 = new JSDOM(`<div id="lk2"><a href="https://example.com">Click here</a></div>`);
+  const text2 = bubbleText(dom2.window.document.getElementById('lk2'));
+  assert(text2 === 'Click here (https://example.com)', `different-text link includes URL: ${JSON.stringify(text2)}`);
+
+  const dom3 = new JSDOM(`<div id="lk3"><a href="https://example.com"></a></div>`);
+  const text3 = bubbleText(dom3.window.document.getElementById('lk3'));
+  assert(text3 === 'https://example.com', `empty-text link shows URL: ${JSON.stringify(text3)}`);
+}
+
+// ─── Test 14: link inside aria-hidden preserves URL ─────────────────────────
+console.log('\n=== Test 14: link URL survives aria-hidden strip ===');
+{
+  const dom = new JSDOM(`
+    <div id="lk4">
+      <a href="https://example.com"><span aria-hidden="true">https://example.com</span></a>
+    </div>
+  `);
+  const text = bubbleText(dom.window.document.getElementById('lk4'));
+  assert(text === 'https://example.com', `URL preserved despite aria-hidden wrapper: ${JSON.stringify(text)}`);
 }
 
 // ─── Summary ────────────────────────────────────────────────────────────────

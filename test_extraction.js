@@ -87,12 +87,67 @@ function strategyC(container) {
 // ─── Structural fallback: exact code copy from extract() in content.js ─────────
 // (mirrors the [dir="auto"] fallback block starting at line 463)
 
+const BLOCK_TAGS = new Set([
+  'DIV', 'P', 'BR', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+  'LI', 'TR', 'BLOCKQUOTE', 'PRE', 'HR', 'UL', 'OL',
+]);
+
+function extractTextWithNewlines(root) {
+  const parts = [];
+  (function walk(node) {
+    if (node.nodeType === 3) { parts.push(node.textContent); return; }
+    if (node.nodeType !== 1) return;
+    if (node.tagName === 'BR') { parts.push('\n'); return; }
+    const isBlock = BLOCK_TAGS.has(node.tagName);
+    if (isBlock && parts.length > 0) {
+      const last = parts[parts.length - 1];
+      if (last && !last.endsWith('\n')) parts.push('\n');
+    }
+    for (const child of node.childNodes) walk(child);
+    if (isBlock && parts.length > 0) {
+      const last = parts[parts.length - 1];
+      if (last && !last.endsWith('\n')) parts.push('\n');
+    }
+  })(root);
+  return parts.join('').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function containsEmoji(text) {
+  if (!text) return false;
+  return /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{200D}\u{2700}-\u{27BF}]/u.test(text);
+}
+
 function bubbleText(bubble) {
   const clone = bubble.cloneNode(true);
+  const doc = clone.ownerDocument || bubble.ownerDocument;
+  clone.querySelectorAll('img').forEach(img => {
+    const alt = img.getAttribute('alt') || img.getAttribute('aria-label') || img.getAttribute('title') || '';
+    if (alt) img.replaceWith(doc.createTextNode(alt));
+  });
+  clone.querySelectorAll('a[href]').forEach(a => {
+    const href = a.getAttribute('href') || '';
+    if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+    const text = a.textContent.trim();
+    if (text && text !== href && !text.startsWith('http')) {
+      a.replaceWith(doc.createTextNode(`${text} (${href})`));
+    } else if (!text) {
+      a.replaceWith(doc.createTextNode(href));
+    } else {
+      a.replaceWith(doc.createTextNode(text));
+    }
+  });
+  clone.querySelectorAll('[role="img"]').forEach(el => {
+    if (el.textContent.trim()) return;
+    const label = el.getAttribute('aria-label') || '';
+    if (label) el.replaceWith(doc.createTextNode(label));
+  });
   clone.querySelectorAll(
-    '[aria-hidden="true"], [class*="hidden"], .sr-only, [style*="display:none"]'
-  ).forEach(n => n.remove());
-  return clone.textContent.trim();
+    '[aria-hidden="true"], .sr-only, [style*="display:none"], [style*="display: none"]'
+  ).forEach(n => {
+    if (containsEmoji(n.textContent)) return;
+    n.remove();
+  });
+  return extractTextWithNewlines(clone);
 }
 
 function structuralFallback(region) {

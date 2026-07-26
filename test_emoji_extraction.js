@@ -32,6 +32,31 @@ function containsEmoji(text) {
   return /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{200D}\u{2700}-\u{27BF}]/u.test(text);
 }
 
+const BLOCK_TAGS = new Set([
+  'DIV', 'P', 'BR', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+  'LI', 'TR', 'BLOCKQUOTE', 'PRE', 'HR', 'UL', 'OL',
+]);
+
+function extractTextWithNewlines(root) {
+  const parts = [];
+  (function walk(node) {
+    if (node.nodeType === 3) { parts.push(node.textContent); return; }
+    if (node.nodeType !== 1) return;
+    if (node.tagName === 'BR') { parts.push('\n'); return; }
+    const isBlock = BLOCK_TAGS.has(node.tagName);
+    if (isBlock && parts.length > 0) {
+      const last = parts[parts.length - 1];
+      if (last && !last.endsWith('\n')) parts.push('\n');
+    }
+    for (const child of node.childNodes) walk(child);
+    if (isBlock && parts.length > 0) {
+      const last = parts[parts.length - 1];
+      if (last && !last.endsWith('\n')) parts.push('\n');
+    }
+  })(root);
+  return parts.join('').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function bubbleText(bubble) {
   const clone = bubble.cloneNode(true);
   const doc = clone.ownerDocument || bubble.ownerDocument;
@@ -42,6 +67,19 @@ function bubbleText(bubble) {
              || img.getAttribute('title')
              || '';
     if (alt) img.replaceWith(doc.createTextNode(alt));
+  });
+
+  clone.querySelectorAll('a[href]').forEach(a => {
+    const href = a.getAttribute('href') || '';
+    if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+    const text = a.textContent.trim();
+    if (text && text !== href && !text.startsWith('http')) {
+      a.replaceWith(doc.createTextNode(`${text} (${href})`));
+    } else if (!text) {
+      a.replaceWith(doc.createTextNode(href));
+    } else {
+      a.replaceWith(doc.createTextNode(text));
+    }
   });
 
   clone.querySelectorAll('[role="img"]').forEach(el => {
@@ -57,7 +95,7 @@ function bubbleText(bubble) {
     n.remove();
   });
 
-  return clone.textContent.trim();
+  return extractTextWithNewlines(clone);
 }
 
 // ─── Test 1: containsEmoji helper ────────────────────────────────────────────
