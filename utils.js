@@ -228,8 +228,12 @@ function parseDateLabel(label) {
   }
 
   // Last resort: native parse (handles ISO 8601 etc.)
+  // Guard: reject dates before 2010 — Instagram didn't exist, so any pre-2010
+  // parse is a false positive (e.g. a bare "2001" year string, or Meta's
+  // 2001-09-09 Unix-billion-second sentinel appearing in a <time datetime>).
+  const MIN_YEAR = 2010;
   const native = new Date(raw);
-  if (!isNaN(native.getTime())) {
+  if (!isNaN(native.getTime()) && native.getFullYear() >= MIN_YEAR) {
     native.setHours(0, 0, 0, 0);
     return native;
   }
