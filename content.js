@@ -58,6 +58,7 @@ function setupBridge() {
     onProgress : null,
     onLog      : null,
     onDone     : null,
+    onAbort    : null,  // reset panel to idle without printing a "Done" summary
     appendLog  : null,  // filled in by panel.js
 
     // Single-conversation download (used by the "Current" panel button)
@@ -281,6 +282,10 @@ function initPanelUI(shadow) {
       `Done. Downloaded: ${summary.downloaded}  Skipped: ${summary.skipped}  Errors: ${summary.errors}`,
       'ok'
     );
+  };
+
+  _bridge.onAbort = () => {
+    setButtons('idle');
   };
 
   _bridge.appendLog = appendLog;
@@ -1095,6 +1100,7 @@ async function startCrawler({ from, to }) {
   if (_state === 'running') return;
   if (!extensionContextValid()) {
     log('err', 'Extension context lost. Please refresh the page (F5) and try again.');
+    if (_bridge && _bridge.onAbort) _bridge.onAbort();
     return;
   }
 
@@ -1216,6 +1222,13 @@ async function runCrawl(fromDate, toDate) {
   let emptyScrolls = 0;
   let consecutiveTooOld = 0;
   let seenTooNew = false; // true once a conversation newer than toDate is encountered
+  // Sidebar virtual lists sometimes snap scrollTop back to 0 after a thread
+  // opens. Without a scroll pin, we rescan from the top each iteration, skip
+  // the whole run of already-seen rows, and only inch forward one row per
+  // cycle — O(N²) and visually "it goes back to the start and skips". We
+  // record a floor scroll position just past the last-processed row and
+  // restore it at the top of each iteration.
+  let scrollFloor = 0;
   // Stop as soon as the first confirmed too-old conversation appears once
   // we've either already seen a too-new one (i.e. passed through the target
   // date band) or downloaded something in-range. This makes end-date filtering
@@ -1243,6 +1256,12 @@ async function runCrawl(fromDate, toDate) {
       }
     }
 
+    // Restore scroll floor if MBS reset the sidebar to top after a thread open.
+    if (scrollFloor > 0 && listContainer.scrollTop < scrollFloor) {
+      listContainer.scrollTop = scrollFloor;
+      await sleep(150); // let the virtual list render the rows at the new position
+    }
+
     // Re-discover visible items every iteration to get a fresh DOM reference.
     // Virtual scroll recycles DOM nodes; cached references go stale and cause
     // navigation to fail or land on the wrong conversation.
@@ -1264,6 +1283,17 @@ async function runCrawl(fromDate, toDate) {
     processed++;
     _stats.convIndex = processed;
     _stats.convTotal = _seenIds.size + items.filter(i => !_seenIds.has(i.id)).length;
+
+    // Advance the scroll floor past this row's bottom so a post-navigation
+    // sidebar reset doesn't drop us back above it. Measured now because the
+    // row element may be recycled by the virtual list by the time we return.
+    try {
+      const rr = item.row.getBoundingClientRect();
+      const cr = listContainer.getBoundingClientRect();
+      const rowBottomWithinContainer = (listContainer.scrollTop + rr.bottom - cr.top);
+      const newFloor = Math.max(0, rowBottomWithinContainer - 4); // tiny overlap so the row stays discoverable for dedup
+      if (newFloor > scrollFloor) scrollFloor = newFloor;
+    } catch { /* row detached — leave floor unchanged */ }
 
     // Pre-filter from the sidebar row timestamp (avoids opening out-of-range conversations).
     // Row timestamps are more reliably parsed than in-thread date dividers, which rely
@@ -1455,11 +1485,43 @@ async function runCrawl(fromDate, toDate) {
 function findConversationListContainer() {
   const half = window.innerWidth / 2;
 
-  // Best signal: find a sidebar anchor, walk up to its scrollable ancestor
+  // Bizweb surface: rows are <span data-surface="/bizweb:inbox/…/thread_rowN">
+  // with no navigation anchors anywhere in the sidebar. Walk up from the first
+  // such span on the left half of the viewport to the first scrollable ancestor.
+  // Filter is a path-end regex so inner surfaces like .../thread_row0/lib:thread_title
+  // (which also contain "thread_row") don't false-positive.
+  // Spans carry style="display: contents" so their own getBoundingClientRect
+  // returns 0×0; measure the parent presentation div (which has real layout).
+  const bizwebRows = Array.from(document.querySelectorAll('[data-surface*="thread_row"]'))
+    .filter(span => /\/thread_row\d+(?::[a-z0-9_]+)?$/i.test(span.getAttribute('data-surface') || ''))
+    .filter(span => {
+      const target = span.parentElement || span;
+      const r = target.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && r.left < half;
+    });
+  if (bizwebRows.length > 0) {
+    let el = bizwebRows[0].parentElement;
+    while (el && el !== document.body) {
+      const { overflow, overflowY } = window.getComputedStyle(el);
+      if (/auto|scroll/.test(overflow + overflowY) && el.scrollHeight > el.clientHeight + 20) {
+        console.log('[DM Extractor] Sidebar container (bizweb):', el.tagName, el.scrollHeight, '>', el.clientHeight);
+        return el;
+      }
+      el = el.parentElement;
+    }
+  }
+
+  // Best signal: find a sidebar anchor that belongs to the current inbox,
+  // then walk up to its scrollable ancestor. Anchors from other inboxes
+  // (e.g. instagram_direct links visible on the messenger inbox) must be
+  // excluded — walking up from the wrong anchor can land on the wrong container.
+  const inboxSegment = (window.location.pathname.toLowerCase().match(/\/inbox\/([^/?#]+)/) || [])[1] || '';
   const allLinks = Array.from(document.querySelectorAll('a[href*="selected_item_id"]'));
   const sidebarLink = allLinks.find(a => {
     const r = a.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && r.left < half;
+    if (!(r.width > 0 && r.height > 0 && r.left < half)) return false;
+    if (inboxSegment && !a.href.toLowerCase().includes('/inbox/' + inboxSegment)) return false;
+    return true;
   });
 
   if (sidebarLink) {
@@ -1558,10 +1620,51 @@ function hasConversationRowSignal(el) {
 function getConversationItems(container) {
   const half = window.innerWidth / 2;
 
+  // ── Strategy BIZWEB ──────────────────────────────────────────────────────
+  // MBS's new "bizweb" inbox renders rows as a React tree with no navigation
+  // anchors. Each row carries <span data-surface="/bizweb:inbox/…/thread_rowN">
+  // and its outer wrapper div carries data-auto-logging-id (unique per row
+  // within the session). Prefer this path on bizweb — the old strategies
+  // either return zero rows or burn 20+ s per row waiting on a URL change
+  // that never happens.
+  const bizwebSpans = Array.from(container.querySelectorAll('[data-surface*="thread_row"]'))
+    .filter(span => /\/thread_row\d+(?::[a-z0-9_]+)?$/i.test(span.getAttribute('data-surface') || ''));
+  if (bizwebSpans.length > 0) {
+    const seen = new Set();
+    const items = [];
+    for (const span of bizwebSpans) {
+      // Spans use display:contents and have no layout box; measure the parent.
+      const row = span.parentElement || span;
+      const r = row.getBoundingClientRect();
+      if (!(r.width > 0 && r.height > 0 && r.left < half)) continue;
+      if (isSidebarNotice(row)) continue;
+      const aid  = row.getAttribute('data-auto-logging-id')
+                || span.getAttribute('data-auto-logging-id')
+                || null;
+      const name = extractRowName(row);
+      if (!name) continue; // placeholder / loading row
+      const id = aid ? ('aid:' + aid) : ('fp:' + row.textContent.replace(/\s+/g, ' ').trim().slice(0, 80));
+      if (seen.has(id)) continue;
+      seen.add(id);
+      items.push({ id, href: null, name, anchor: null, row, bizweb: true });
+    }
+    if (items.length > 0) {
+      console.log('[DM Extractor] Strategy BIZWEB:', items.length, 'items');
+      return items;
+    }
+  }
+
   // ── Strategy A ───────────────────────────────────────────────────────────
+  // Limit to anchors whose href matches the current inbox segment so that
+  // cross-channel links (e.g. an instagram_direct row visible while on the
+  // messenger inbox in MBS's unified sidebar) are never followed — they would
+  // navigate the browser away to a completely different inbox.
+  const inboxSegment = (window.location.pathname.toLowerCase().match(/\/inbox\/([^/?#]+)/) || [])[1] || '';
   const links = Array.from(container.querySelectorAll('a[href*="selected_item_id"]')).filter(a => {
     const r = a.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && r.left < half;
+    if (!(r.width > 0 && r.height > 0 && r.left < half)) return false;
+    if (inboxSegment && !a.href.toLowerCase().includes('/inbox/' + inboxSegment)) return false;
+    return true;
   });
 
   if (links.length > 0) {
@@ -1742,6 +1845,20 @@ function extractRowDate(row) {
     return r.width && r.height && r.left >= rightBoundary;
   };
 
+  // Pass 0: bizweb/WEC authoritative source — <abbr class="timestamp"
+  // data-utime="…"> carries the exact Unix-seconds timestamp of the last
+  // message. Reads this regardless of right-region position because the
+  // attribute is deterministic and locale-independent.
+  const abbr = row.querySelector('abbr.timestamp[data-utime], abbr[data-utime]');
+  if (abbr) {
+    const utime = parseFloat(abbr.getAttribute('data-utime'));
+    if (!isNaN(utime) && utime > 1_262_304_000 /* 2010-01-01 */) {
+      const d = new Date(utime * 1000);
+      d.setHours(0, 0, 0, 0);
+      return d;
+    }
+  }
+
   // Pass 1: leaf span/div/time in the right portion.
   for (const el of row.querySelectorAll('span,div,time')) {
     if (el.children.length > 0) continue;
@@ -1825,6 +1942,15 @@ async function navigateToConversation(item) {
   await sleep(250);
 
   if (!document.body.contains(item.row)) return false;
+
+  // Bizweb short-circuit: no URL navigation happens on this surface, so the
+  // id-change strategies below would each burn their timeout and still fail.
+  // Click the row's avatar/name zone and wait for the thread-pane header to
+  // name-match the row's title.
+  if (item.bizweb || Array.from(item.row.querySelectorAll('[data-surface*="thread_row"]'))
+      .some(s => /\/thread_row\d+(?::[a-z0-9_]+)?$/i.test(s.getAttribute('data-surface') || ''))) {
+    return await openBizwebRow(item);
+  }
 
   const prevId = getSelectedItemId();
 
@@ -2098,6 +2224,70 @@ function reactClick(el) {
     }
   } catch { }
   return false;
+}
+
+/**
+ * Bizweb row opener. Clicks the LEFT quarter of the row (avatar/name zone,
+ * never anywhere near the right-side action grid) and waits for the thread
+ * pane's header to name-match the row's thread_title. Returns true on open.
+ */
+async function openBizwebRow(item) {
+  const expected = (item.name || '').trim();
+  if (!expected) return false;
+
+  if (nameMatchesHeader(expected)) return true;
+
+  const rect = item.row.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+
+  const cx = rect.left + rect.width * 0.25;
+  const cy = rect.top  + rect.height / 2;
+  const inViewport = cx >= 0 && cx <= window.innerWidth && cy >= 0 && cy <= window.innerHeight;
+  if (!inViewport) return false;
+
+  const stack = (document.elementsFromPoint(cx, cy) || []).filter(
+    e => e !== document.body && e !== document.documentElement && !isDangerousActionEl(e)
+  );
+
+  for (const el of stack) {
+    if (reactClick(el)) {
+      if (await waitForHeaderName(expected, 1500)) return true;
+    }
+    pointerClick(el);
+    if (await waitForHeaderName(expected, 800)) return true;
+  }
+
+  // Final fallback: fire a react/pointer click on the row itself (ancestors are
+  // skipped — they'd risk hitting MBS's row-container wrappers that react to
+  // right-side action-button clicks on hover).
+  if (!isDangerousActionEl(item.row)) {
+    reactClick(item.row);
+    if (await waitForHeaderName(expected, 1200)) return true;
+    pointerClick(item.row);
+    if (await waitForHeaderName(expected, 800)) return true;
+  }
+
+  return false;
+}
+
+/** True if the thread-pane header currently names a conversation whose title overlaps `expected`. */
+function nameMatchesHeader(expected) {
+  const header = (findCustomerName() || '').trim().toLowerCase();
+  const row    = String(expected || '').trim().toLowerCase();
+  if (!header || row.length < 2) return false;
+  return header.includes(row) || row.includes(header);
+}
+
+/** Resolves true when nameMatchesHeader(expected) becomes true, false on timeout. */
+function waitForHeaderName(expected, timeout) {
+  return new Promise(resolve => {
+    if (nameMatchesHeader(expected)) { resolve(true); return; }
+    const deadline = Date.now() + timeout;
+    const iv = setInterval(() => {
+      if (nameMatchesHeader(expected))      { clearInterval(iv); resolve(true); }
+      else if (Date.now() >= deadline)      { clearInterval(iv); resolve(false); }
+    }, 100);
+  });
 }
 
 /** Resolves with the new selected_item_id when URL changes, or null on timeout. */
